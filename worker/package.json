@@ -2,6 +2,7 @@
   "name": "clicky-proxy",
   "private": true,
   "scripts": {
+    "local": "node local-server.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"

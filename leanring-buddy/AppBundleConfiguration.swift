@@ -9,7 +9,7 @@ import Foundation
 
 enum AppBundleConfiguration {
     static var workerBaseURL: String {
-        stringValue(forKey: "WorkerBaseURL") ?? "https://your-worker-name.your-subdomain.workers.dev"
+        stringValue(forKey: "WorkerBaseURL") ?? "http://localhost:8787"
     }
 
     static func stringValue(forKey key: String) -> String? {

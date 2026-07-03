@@ -45,57 +45,22 @@ If you want to do it yourself, here's the deal.
 
 - macOS 14.2+ (for ScreenCaptureKit)
 - Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
+- Node.js 18+ (for the local proxy)
 - API keys for: [MiniMax](https://platform.minimax.io) and [Tencent Cloud ASR](https://cloud.tencent.com/product/asr)
 
-### 1. Set up the Cloudflare Worker
+### 1. Set up the local proxy
 
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
+The local proxy holds your API keys. The app talks to `http://localhost:8787`, and the proxy talks to MiniMax/Tencent. This way your keys do not ship in the app binary.
 
 ```bash
 cd worker
 npm install
+cp .dev.vars.example .dev.vars
 ```
 
-Now add your secrets. Wrangler will prompt you to paste each one:
+Open `worker/.dev.vars` and fill in:
 
-```bash
-npx wrangler secret put MINIMAX_API_KEY
-npx wrangler secret put TENCENT_ASR_APP_ID
-npx wrangler secret put TENCENT_ASR_SECRET_ID
-npx wrangler secret put TENCENT_ASR_SECRET_KEY
-```
-
-For MiniMax TTS and Tencent ASR defaults, open `wrangler.toml` and adjust the non-sensitive vars if needed:
-
-```toml
-[vars]
-MINIMAX_TTS_MODEL = "speech-2.8-turbo"
-MINIMAX_TTS_VOICE_ID = "Chinese (Mandarin)_Warm_Bestie"
-TENCENT_ASR_ENGINE_MODEL_TYPE = "16k_zh_en"
-```
-
-Deploy it:
-
-```bash
-npx wrangler deploy
-```
-
-It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
-
-### 2. Run the Worker locally (for development)
-
-If you want to test changes to the Worker without deploying:
-
-```bash
-cd worker
-npx wrangler dev
-```
-
-This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
-
-```
+```text
 MINIMAX_API_KEY=...
 TENCENT_ASR_APP_ID=...
 TENCENT_ASR_SECRET_ID=...
@@ -105,14 +70,35 @@ MINIMAX_TTS_VOICE_ID=Chinese (Mandarin)_Warm_Bestie
 TENCENT_ASR_ENGINE_MODEL_TYPE=16k_zh_en
 ```
 
-Then update `WorkerBaseURL` in `leanring-buddy/Info.plist` to `http://localhost:8787` instead of the deployed Worker URL while developing.
+Start the proxy:
+
+```bash
+npm run local
+```
+
+The app defaults to `http://localhost:8787` via `WorkerBaseURL` in `leanring-buddy/Info.plist`.
+
+### 2. Optional: deploy to Cloudflare later
+
+If you want to run the proxy remotely later, create a Cloudflare account and add the secrets:
+
+```bash
+npx wrangler secret put MINIMAX_API_KEY
+npx wrangler secret put TENCENT_ASR_APP_ID
+npx wrangler secret put TENCENT_ASR_SECRET_ID
+npx wrangler secret put TENCENT_ASR_SECRET_KEY
+npx wrangler deploy
+```
+
+It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
 
 ### 3. Update the proxy URLs in the app
 
-The app reads the Worker URL from `WorkerBaseURL` in `leanring-buddy/Info.plist`. Replace the placeholder with your Worker URL:
+The app reads the proxy URL from `WorkerBaseURL` in `leanring-buddy/Info.plist`. It is already set to local development:
 
-```bash
-grep -r "WorkerBaseURL" leanring-buddy/
+```xml
+<key>WorkerBaseURL</key>
+<string>http://localhost:8787</string>
 ```
 
 ### 4. Open in Xcode and run
