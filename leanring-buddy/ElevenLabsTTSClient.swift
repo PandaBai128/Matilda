@@ -2,7 +2,7 @@
 //  ElevenLabsTTSClient.swift
 //  leanring-buddy
 //
-//  Streams text-to-speech audio from ElevenLabs and plays it back
+//  Streams text-to-speech audio from the configured Worker TTS endpoint and plays it back
 //  through the system audio output. Uses the streaming endpoint so
 //  playback begins before the full audio has been generated.
 //
@@ -28,7 +28,7 @@ final class ElevenLabsTTSClient {
         self.session = URLSession(configuration: configuration)
     }
 
-    /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
+    /// Sends `text` to the Worker TTS endpoint and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
     func speakText(_ text: String) async throws {
         var request = URLRequest(url: proxyURL)
@@ -50,13 +50,13 @@ final class ElevenLabsTTSClient {
         let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw NSError(domain: "ElevenLabsTTS", code: -1,
+            throw NSError(domain: "MiniMaxTTS", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw NSError(domain: "ElevenLabsTTS", code: httpResponse.statusCode,
+            throw NSError(domain: "MiniMaxTTS", code: httpResponse.statusCode,
                           userInfo: [NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)"])
         }
 
@@ -65,7 +65,7 @@ final class ElevenLabsTTSClient {
         let player = try AVAudioPlayer(data: data)
         self.audioPlayer = player
         player.play()
-        print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+        print("🔊 MiniMax TTS: playing \(data.count / 1024)KB audio")
     }
 
     /// Whether TTS audio is currently playing back.

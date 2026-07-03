@@ -1,20 +1,28 @@
 /**
  * Clicky Proxy Worker
  *
- * Proxies requests to Claude and ElevenLabs APIs so the app never
- * ships with raw API keys. Keys are stored as Cloudflare secrets.
+ * Proxies requests to MiniMax and signs Tencent Cloud ASR websocket URLs so
+ * the macOS app never ships with raw API keys.
  *
  * Routes:
- *   POST /chat  → Anthropic Messages API (streaming)
- *   POST /tts   → ElevenLabs TTS API
+ *   POST /chat           -> MiniMax Anthropic-compatible Messages API
+ *   POST /tts            -> MiniMax T2A HTTP API, returned as audio/mpeg
+ *   POST /transcribe-url -> Tencent Cloud realtime ASR signed websocket URL
  */
 
 interface Env {
-  ANTHROPIC_API_KEY: string;
-  ELEVENLABS_API_KEY: string;
-  ELEVENLABS_VOICE_ID: string;
-  ASSEMBLYAI_API_KEY: string;
+  MINIMAX_API_KEY: string;
+  MINIMAX_TTS_VOICE_ID?: string;
+  MINIMAX_TTS_MODEL?: string;
+  TENCENT_ASR_APP_ID: string;
+  TENCENT_ASR_SECRET_ID: string;
+  TENCENT_ASR_SECRET_KEY: string;
+  TENCENT_ASR_ENGINE_MODEL_TYPE?: string;
 }
+
+const MINIMAX_MESSAGES_URL = "https://api.minimax.io/anthropic/v1/messages";
+const MINIMAX_TTS_URL = "https://api.minimax.io/v1/t2a_v2";
+const TENCENT_ASR_HOST = "asr.cloud.tencent.com";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -33,15 +41,12 @@ export default {
         return await handleTTS(request, env);
       }
 
-      if (url.pathname === "/transcribe-token") {
-        return await handleTranscribeToken(env);
+      if (url.pathname === "/transcribe-url") {
+        return await handleTranscribeURL(request, env);
       }
     } catch (error) {
       console.error(`[${url.pathname}] Unhandled error:`, error);
-      return new Response(
-        JSON.stringify({ error: String(error) }),
-        { status: 500, headers: { "content-type": "application/json" } }
-      );
+      return jsonResponse({ error: String(error) }, 500);
     }
 
     return new Response("Not found", { status: 404 });
@@ -49,21 +54,23 @@ export default {
 };
 
 async function handleChat(request: Request, env: Env): Promise<Response> {
-  const body = await request.text();
+  const body = await request.json<Record<string, unknown>>();
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  body.model = "MiniMax-M3";
+  body.thinking = { type: "disabled" };
+
+  const response = await fetch(MINIMAX_MESSAGES_URL, {
     method: "POST",
     headers: {
-      "x-api-key": env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
+      Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
       "content-type": "application/json",
     },
-    body,
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error(`[/chat] Anthropic API error ${response.status}: ${errorBody}`);
+    console.error(`[/chat] MiniMax API error ${response.status}: ${errorBody}`);
     return new Response(errorBody, {
       status: response.status,
       headers: { "content-type": "application/json" },
@@ -79,63 +86,167 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function handleTranscribeToken(env: Env): Promise<Response> {
-  const response = await fetch(
-    "https://streaming.assemblyai.com/v3/token?expires_in_seconds=480",
-    {
-      method: "GET",
-      headers: {
-        authorization: env.ASSEMBLYAI_API_KEY,
+async function handleTTS(request: Request, env: Env): Promise<Response> {
+  const incomingBody = await request.json<{ text?: string }>();
+  const text = incomingBody.text?.trim();
+
+  if (!text) {
+    return jsonResponse({ error: "Missing text for TTS." }, 400);
+  }
+
+  const response = await fetch(MINIMAX_TTS_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: env.MINIMAX_TTS_MODEL || "speech-2.8-turbo",
+      text,
+      stream: false,
+      language_boost: "auto",
+      output_format: "hex",
+      voice_setting: {
+        voice_id: env.MINIMAX_TTS_VOICE_ID || "Chinese (Mandarin)_Warm_Bestie",
+        speed: 1,
+        vol: 1,
+        pitch: 0,
       },
-    }
-  );
+      audio_setting: {
+        sample_rate: 32000,
+        bitrate: 128000,
+        format: "mp3",
+        channel: 1,
+      },
+    }),
+  });
+
+  const responseText = await response.text();
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    console.error(`[/transcribe-token] AssemblyAI token error ${response.status}: ${errorBody}`);
-    return new Response(errorBody, {
+    console.error(`[/tts] MiniMax TTS error ${response.status}: ${responseText}`);
+    return new Response(responseText, {
       status: response.status,
       headers: { "content-type": "application/json" },
     });
   }
 
-  const data = await response.text();
-  return new Response(data, {
+  const payload = JSON.parse(responseText) as {
+    data?: { audio?: string };
+    base_resp?: { status_code?: number; status_msg?: string };
+  };
+
+  if (payload.base_resp?.status_code && payload.base_resp.status_code !== 0) {
+    return jsonResponse({
+      error: payload.base_resp.status_msg || "MiniMax TTS returned an error.",
+      base_resp: payload.base_resp,
+    }, 502);
+  }
+
+  if (!payload.data?.audio) {
+    return jsonResponse({ error: "MiniMax TTS returned no audio." }, 502);
+  }
+
+  return new Response(hexToUint8Array(payload.data.audio), {
     status: 200,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "audio/mpeg" },
   });
 }
 
-async function handleTTS(request: Request, env: Env): Promise<Response> {
-  const body = await request.text();
-  const voiceId = env.ELEVENLABS_VOICE_ID;
+async function handleTranscribeURL(request: Request, env: Env): Promise<Response> {
+  const body: { keyterms?: string[] } = await request
+    .json<{ keyterms?: string[] }>()
+    .catch(() => ({}));
+  const voiceId = crypto.randomUUID();
+  const timestamp = Math.floor(Date.now() / 1000);
+  const expired = timestamp + 600;
+  const nonce = Math.floor(Math.random() * 1_000_000_000).toString();
 
-  const response = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-    {
-      method: "POST",
-      headers: {
-        "xi-api-key": env.ELEVENLABS_API_KEY,
-        "content-type": "application/json",
-        accept: "audio/mpeg",
-      },
-      body,
-    }
-  );
+  const params: Record<string, string> = {
+    secretid: env.TENCENT_ASR_SECRET_ID,
+    timestamp: String(timestamp),
+    expired: String(expired),
+    nonce,
+    engine_model_type: env.TENCENT_ASR_ENGINE_MODEL_TYPE || "16k_zh_en",
+    voice_id: voiceId,
+    voice_format: "1",
+    needvad: "1",
+    filter_empty_result: "1",
+    convert_num_mode: "1",
+    vad_silence_time: "1000",
+  };
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error(`[/tts] ElevenLabs API error ${response.status}: ${errorBody}`);
-    return new Response(errorBody, {
-      status: response.status,
-      headers: { "content-type": "application/json" },
-    });
+  const hotwordList = makeHotwordList(body.keyterms || []);
+  if (hotwordList) {
+    params.hotword_list = hotwordList;
   }
 
-  return new Response(response.body, {
-    status: response.status,
-    headers: {
-      "content-type": response.headers.get("content-type") || "audio/mpeg",
-    },
+  const signedPath = `/asr/v2/${env.TENCENT_ASR_APP_ID}`;
+  const signatureSource = `${TENCENT_ASR_HOST}${signedPath}?${makeSortedQueryString(params)}`;
+  const signature = await hmacSha1Base64(signatureSource, env.TENCENT_ASR_SECRET_KEY);
+
+  const finalQuery = new URLSearchParams(params);
+  finalQuery.set("signature", signature);
+
+  return jsonResponse({
+    websocket_url: `wss://${TENCENT_ASR_HOST}${signedPath}?${finalQuery.toString()}`,
+    voice_id: voiceId,
+    expires_at: expired,
+  });
+}
+
+function makeHotwordList(keyterms: string[]): string | null {
+  const normalizedKeyterms = keyterms
+    .map((term) => term.trim())
+    .filter(Boolean)
+    .slice(0, 128)
+    .map((term) => `${term.replace(/[,\s|]/g, "")}|8`)
+    .filter((term) => term.length > 2);
+
+  return normalizedKeyterms.length > 0 ? normalizedKeyterms.join(",") : null;
+}
+
+function makeSortedQueryString(params: Record<string, string>): string {
+  return Object.keys(params)
+    .sort()
+    .map((key) => `${key}=${params[key]}`)
+    .join("&");
+}
+
+async function hmacSha1Base64(message: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(message));
+  return arrayBufferToBase64(signature);
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+function hexToUint8Array(hex: string): Uint8Array {
+  const normalizedHex = hex.trim();
+  const bytes = new Uint8Array(normalizedHex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = parseInt(normalizedHex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "content-type": "application/json" },
   });
 }

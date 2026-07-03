@@ -1,11 +1,11 @@
 //
 //  ClaudeAPI.swift
-//  Claude API Implementation with streaming support
+//  Vision API implementation with streaming support
 //
 
 import Foundation
 
-/// Claude API helper with streaming for progressive text display.
+/// Vision API helper with streaming for progressive text display.
 class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
     private static var hasStartedTLSWarmup = false
@@ -14,7 +14,7 @@ class ClaudeAPI {
     var model: String
     private let session: URLSession
 
-    init(proxyURL: String, model: String = "claude-sonnet-4-6") {
+    init(proxyURL: String, model: String = "MiniMax-M3") {
         self.apiURL = URL(string: proxyURL)!
         self.model = model
 
@@ -150,14 +150,14 @@ class ClaudeAPI {
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = bodyData
         let payloadMB = Double(bodyData.count) / 1_048_576.0
-        print("🌐 Claude streaming request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
+        print("🌐 Vision streaming request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
 
         // Use bytes streaming for SSE (Server-Sent Events)
         let (byteStream, response) = try await session.bytes(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(
-                domain: "ClaudeAPI",
+                domain: "VisionAPI",
                 code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response"]
             )
@@ -171,7 +171,7 @@ class ClaudeAPI {
             }
             let errorBody = errorBodyChunks.joined(separator: "\n")
             throw NSError(
-                domain: "ClaudeAPI",
+                domain: "VisionAPI",
                 code: httpResponse.statusCode,
                 userInfo: [NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)"]
             )
@@ -260,7 +260,7 @@ class ClaudeAPI {
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = bodyData
         let payloadMB = Double(bodyData.count) / 1_048_576.0
-        print("🌐 Claude request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
+        print("🌐 Vision request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
 
         let (data, response) = try await session.data(for: request)
 
@@ -268,7 +268,7 @@ class ClaudeAPI {
               (200...299).contains(httpResponse.statusCode) else {
             let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw NSError(
-                domain: "ClaudeAPI",
+                domain: "VisionAPI",
                 code: (response as? HTTPURLResponse)?.statusCode ?? -1,
                 userInfo: [NSLocalizedDescriptionKey: "API Error: \(responseString)"]
             )
@@ -279,7 +279,7 @@ class ClaudeAPI {
               let textBlock = content.first(where: { ($0["type"] as? String) == "text" }),
               let text = textBlock["text"] as? String else {
             throw NSError(
-                domain: "ClaudeAPI",
+                domain: "VisionAPI",
                 code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]
             )

@@ -31,6 +31,7 @@ protocol BuddyTranscriptionProvider {
 
 enum BuddyTranscriptionProviderFactory {
     private enum PreferredProvider: String {
+        case tencentASR = "tencent"
         case assemblyAI = "assemblyai"
         case openAI = "openai"
         case appleSpeech = "apple"
@@ -48,10 +49,32 @@ enum BuddyTranscriptionProviderFactory {
             .lowercased()
         let preferredProvider = preferredProviderRawValue.flatMap(PreferredProvider.init(rawValue:))
 
+        let tencentASRProvider = TencentASRStreamingTranscriptionProvider()
         let assemblyAIProvider = AssemblyAIStreamingTranscriptionProvider()
         let openAIProvider = OpenAIAudioTranscriptionProvider()
 
         if preferredProvider == .appleSpeech {
+            return AppleSpeechTranscriptionProvider()
+        }
+
+        if preferredProvider == .tencentASR {
+            if tencentASRProvider.isConfigured {
+                return tencentASRProvider
+            }
+
+            print("⚠️ Transcription: Tencent ASR preferred but not configured, falling back")
+
+            if assemblyAIProvider.isConfigured {
+                print("⚠️ Transcription: using AssemblyAI as fallback")
+                return assemblyAIProvider
+            }
+
+            if openAIProvider.isConfigured {
+                print("⚠️ Transcription: using OpenAI as fallback")
+                return openAIProvider
+            }
+
+            print("⚠️ Transcription: using Apple Speech as fallback")
             return AppleSpeechTranscriptionProvider()
         }
 
@@ -85,6 +108,10 @@ enum BuddyTranscriptionProviderFactory {
 
             print("⚠️ Transcription: using Apple Speech as fallback")
             return AppleSpeechTranscriptionProvider()
+        }
+
+        if tencentASRProvider.isConfigured {
+            return tencentASRProvider
         }
 
         if assemblyAIProvider.isConfigured {

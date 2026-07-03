@@ -8,6 +8,10 @@
 import Foundation
 
 enum AppBundleConfiguration {
+    static var workerBaseURL: String {
+        stringValue(forKey: "WorkerBaseURL") ?? "https://your-worker-name.your-subdomain.workers.dev"
+    }
+
     static func stringValue(forKey key: String) -> String? {
         if let value = Bundle.main.object(forInfoDictionaryKey: key) as? String {
             let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)

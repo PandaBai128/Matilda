@@ -47,7 +47,7 @@ If you want to do it yourself, here's the deal.
 - Xcode 15+
 - Node.js 18+ (for the Cloudflare Worker)
 - A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- API keys for: [MiniMax](https://platform.minimax.io) and [Tencent Cloud ASR](https://cloud.tencent.com/product/asr)
 
 ### 1. Set up the Cloudflare Worker
 
@@ -61,16 +61,19 @@ npm install
 Now add your secrets. Wrangler will prompt you to paste each one:
 
 ```bash
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
+npx wrangler secret put MINIMAX_API_KEY
+npx wrangler secret put TENCENT_ASR_APP_ID
+npx wrangler secret put TENCENT_ASR_SECRET_ID
+npx wrangler secret put TENCENT_ASR_SECRET_KEY
 ```
 
-For the ElevenLabs voice ID, open `wrangler.toml` and set it there (it's not sensitive):
+For MiniMax TTS and Tencent ASR defaults, open `wrangler.toml` and adjust the non-sensitive vars if needed:
 
 ```toml
 [vars]
-ELEVENLABS_VOICE_ID = "your-voice-id-here"
+MINIMAX_TTS_MODEL = "speech-2.8-turbo"
+MINIMAX_TTS_VOICE_ID = "Chinese (Mandarin)_Warm_Bestie"
+TENCENT_ASR_ENGINE_MODEL_TYPE = "16k_zh_en"
 ```
 
 Deploy it:
@@ -93,25 +96,24 @@ npx wrangler dev
 This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
-ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...
+MINIMAX_API_KEY=...
+TENCENT_ASR_APP_ID=...
+TENCENT_ASR_SECRET_ID=...
+TENCENT_ASR_SECRET_KEY=...
+MINIMAX_TTS_MODEL=speech-2.8-turbo
+MINIMAX_TTS_VOICE_ID=Chinese (Mandarin)_Warm_Bestie
+TENCENT_ASR_ENGINE_MODEL_TYPE=16k_zh_en
 ```
 
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
+Then update `WorkerBaseURL` in `leanring-buddy/Info.plist` to `http://localhost:8787` instead of the deployed Worker URL while developing.
 
 ### 3. Update the proxy URLs in the app
 
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
+The app reads the Worker URL from `WorkerBaseURL` in `leanring-buddy/Info.plist`. Replace the placeholder with your Worker URL:
 
 ```bash
-grep -r "clicky-proxy" leanring-buddy/
+grep -r "WorkerBaseURL" leanring-buddy/
 ```
-
-You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
-- `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
 
 ### 4. Open in Xcode and run
 
@@ -137,7 +139,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to Tencent Cloud ASR, sends the transcript + screenshot to MiniMax via streaming SSE, and plays the response through MiniMax TTS. The model can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied or signed through a Cloudflare Worker.
 
 ## Project structure
 
@@ -145,13 +147,14 @@ If you want the full technical breakdown, read `CLAUDE.md`. But here's the short
 leanring-buddy/          # Swift source (yes, the typo stays)
   CompanionManager.swift    # Central state machine
   CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
+  ClaudeAPI.swift           # MiniMax-compatible streaming vision client
   ElevenLabsTTSClient.swift # Text-to-speech playback
   OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
+  TencentASR*.swift         # Tencent Cloud real-time transcription
+  AssemblyAI*.swift         # Legacy real-time transcription fallback
   BuddyDictation*.swift     # Push-to-talk pipeline
 worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
+  src/index.ts              # Routes: /chat, /tts, /transcribe-url
 CLAUDE.md                # Full architecture doc (agents read this)
 ```
 

@@ -607,8 +607,7 @@ struct CompanionPanelView: View {
             Spacer()
 
             HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                modelOptionButton(label: "MiniMax M3", modelID: "MiniMax-M3")
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
