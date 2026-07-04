@@ -369,16 +369,19 @@ struct BlueCursorView: View {
             companionManager.tearDownOnboardingVideo()
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
+            clickyDebugLog("overlay point-change screen=\(screenFrame) newLocation=\(String(describing: newLocation)) displayFrame=\(String(describing: companionManager.detectedElementDisplayFrame))")
             // When a UI element location is detected, navigate the buddy to
             // that position so it points at the element.
             guard let screenLocation = newLocation,
                   let displayFrame = companionManager.detectedElementDisplayFrame else {
+                clickyDebugLog("overlay point-change ignored missing-target screen=\(screenFrame)")
                 return
             }
 
             // Only navigate if the target is on THIS screen
             guard screenFrame.contains(CGPoint(x: displayFrame.midX, y: displayFrame.midY))
                   || displayFrame == screenFrame else {
+                clickyDebugLog("overlay point-change ignored different-screen screen=\(screenFrame) displayFrame=\(displayFrame)")
                 return
             }
 
@@ -455,7 +458,10 @@ struct BlueCursorView: View {
     /// Starts animating the buddy toward a detected UI element location.
     private func startNavigatingToElement(screenLocation: CGPoint) {
         // Don't interrupt welcome animation
-        guard !showWelcome || welcomeText.isEmpty else { return }
+        guard !showWelcome || welcomeText.isEmpty else {
+            clickyDebugLog("overlay navigate ignored welcome screenLocation=\(screenLocation)")
+            return
+        }
 
         // Convert the AppKit screen location to SwiftUI coordinates for this screen
         let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
@@ -472,6 +478,7 @@ struct BlueCursorView: View {
             x: max(20, min(offsetTarget.x, screenFrame.width - 20)),
             y: max(20, min(offsetTarget.y, screenFrame.height - 20))
         )
+        clickyDebugLog("overlay navigate start screenLocation=\(screenLocation) target=\(targetInSwiftUI) clamped=\(clampedTarget) screen=\(screenFrame)")
 
         // Record the current cursor position so we can detect if the user
         // moves the mouse enough to cancel the return flight

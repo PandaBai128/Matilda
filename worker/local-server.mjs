@@ -3,12 +3,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { URL } from "node:url";
 
-const MINIMAX_MESSAGES_URL = "https://api.minimax.io/anthropic/v1/messages";
-const MINIMAX_TTS_URL = "https://api.minimax.io/v1/t2a_v2";
 const TENCENT_ASR_HOST = "asr.cloud.tencent.com";
 
 const env = loadEnvironment();
 const port = Number(env.PORT || 8787);
+const minimaxAPIHost = (env.MINIMAX_API_HOST || "https://api.minimax.io").replace(/\/+$/, "");
+const MINIMAX_MESSAGES_URL = `${minimaxAPIHost}/anthropic/v1/messages`;
+const MINIMAX_TTS_URL = `${minimaxAPIHost}/v1/t2a_v2`;
 
 const server = createServer(async (request, response) => {
   try {
@@ -49,8 +50,7 @@ async function handleChat(request, response) {
   requireEnv(["MINIMAX_API_KEY"]);
 
   const body = await readJSON(request);
-  body.model = "MiniMax-M3";
-  body.thinking = { type: "disabled" };
+  applyMiniMaxChatDefaults(body, env);
 
   const upstreamResponse = await fetch(MINIMAX_MESSAGES_URL, {
     method: "POST",
@@ -75,6 +75,19 @@ async function handleChat(request, response) {
     response.write(chunk);
   }
   response.end();
+}
+
+function applyMiniMaxChatDefaults(body, env) {
+  body.model = env.MINIMAX_CHAT_MODEL || "MiniMax-M3";
+
+  const thinkingType = String(env.MINIMAX_THINKING_TYPE || "disabled").trim().toLowerCase();
+  if (thinkingType === "omit") {
+    delete body.thinking;
+  } else if (thinkingType === "disabled" || thinkingType === "adaptive") {
+    body.thinking = { type: thinkingType };
+  } else {
+    body.thinking = { type: "adaptive" };
+  }
 }
 
 async function handleTTS(request, response) {
@@ -169,9 +182,11 @@ async function handleTranscribeURL(request, response) {
     vad_silence_time: "1000",
   };
 
-  const hotwordList = makeHotwordList(body.keyterms || []);
-  if (hotwordList) {
-    params.hotword_list = hotwordList;
+  if (env.TENCENT_ASR_ENABLE_HOTWORDS === "1") {
+    const hotwordList = makeHotwordList(body.keyterms || []);
+    if (hotwordList) {
+      params.hotword_list = hotwordList;
+    }
   }
 
   const signedPath = `/asr/v2/${env.TENCENT_ASR_APP_ID}`;

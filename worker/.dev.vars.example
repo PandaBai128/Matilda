@@ -1,9 +1,14 @@
 MINIMAX_API_KEY=
+# Use https://api.minimaxi.com for MiniMax China-region keys.
+MINIMAX_API_HOST=https://api.minimax.io
+MINIMAX_CHAT_MODEL=MiniMax-M3
+# MiniMax-M3 Anthropic-compatible thinking: adaptive, disabled, or omit.
+MINIMAX_THINKING_TYPE=disabled
 TENCENT_ASR_APP_ID=
 TENCENT_ASR_SECRET_ID=
 TENCENT_ASR_SECRET_KEY=
 
 MINIMAX_TTS_MODEL=speech-2.8-turbo
 MINIMAX_TTS_VOICE_ID=Chinese (Mandarin)_Warm_Bestie
-TENCENT_ASR_ENGINE_MODEL_TYPE=16k_zh_en
+TENCENT_ASR_ENGINE_MODEL_TYPE=16k_zh
 PORT=8787

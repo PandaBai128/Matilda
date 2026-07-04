@@ -14,6 +14,36 @@ import PostHog
 import ScreenCaptureKit
 import SwiftUI
 
+func clickyDebugLog(_ message: String) {
+    let line = "[DEBUG-PTT] \(Date()) \(message)\n"
+    print(line, terminator: "")
+    guard let data = line.data(using: .utf8) else { return }
+
+    let logURL = URL(fileURLWithPath: "/tmp/clicky-debug.log")
+    if !FileManager.default.fileExists(atPath: logURL.path) {
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+    }
+
+    do {
+        let handle = try FileHandle(forWritingTo: logURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+        try handle.close()
+    } catch {
+        print("[DEBUG-PTT] failed to write debug log: \(error)")
+    }
+}
+
+func clickyDebugSnippet(_ text: String, limit: Int = 240) -> String {
+    let normalizedText = text
+        .replacingOccurrences(of: "\n", with: " ")
+        .replacingOccurrences(of: "\r", with: " ")
+    if normalizedText.count <= limit {
+        return normalizedText
+    }
+    return String(normalizedText.prefix(limit)) + "..."
+}
+
 enum CompanionVoiceState {
     case idle
     case listening
@@ -154,6 +184,7 @@ final class CompanionManager: ObservableObject {
 
     func start() {
         refreshAllPermissions()
+        clickyDebugLog("manager.start accessibility=\(hasAccessibilityPermission) screen=\(hasScreenRecordingPermission) mic=\(hasMicrophonePermission) screenContent=\(hasScreenContentPermission) onboarded=\(hasCompletedOnboarding) all=\(allPermissionsGranted)")
         print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindVoiceStateObservation()
@@ -292,8 +323,10 @@ final class CompanionManager: ObservableObject {
         hasAccessibilityPermission = currentlyHasAccessibility
 
         if currentlyHasAccessibility {
+            clickyDebugLog("permissions accessibility=true starting-global-monitor")
             globalPushToTalkShortcutMonitor.start()
         } else {
+            clickyDebugLog("permissions accessibility=false stopping-global-monitor")
             globalPushToTalkShortcutMonitor.stop()
         }
 
@@ -301,6 +334,7 @@ final class CompanionManager: ObservableObject {
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
+        clickyDebugLog("permissions accessibility=\(hasAccessibilityPermission) screen=\(hasScreenRecordingPermission) mic=\(hasMicrophonePermission) screenContent=\(hasScreenContentPermission) all=\(allPermissionsGranted)")
 
         // Debug: log permission state on changes
         if previouslyHadAccessibility != hasAccessibilityPermission
@@ -450,9 +484,55 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    func togglePanelVoiceInput() {
+        if buddyDictationManager.isDictationInProgress || buddyDictationManager.isPreparingToRecord {
+            clickyDebugLog("panel voice-button stop")
+            ClickyAnalytics.trackPushToTalkReleased()
+            pendingKeyboardShortcutStartTask?.cancel()
+            pendingKeyboardShortcutStartTask = nil
+            buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
+            return
+        }
+
+        clickyDebugLog("panel voice-button start")
+
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
+
+        ClickyAnalytics.trackPushToTalkStarted()
+
+        pendingKeyboardShortcutStartTask?.cancel()
+        pendingKeyboardShortcutStartTask = Task {
+            await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
+                currentDraftText: "",
+                updateDraftText: { _ in
+                    // Partial transcripts are hidden (waveform-only UI)
+                },
+                submitDraftText: { [weak self] finalTranscript in
+                    self?.lastTranscript = finalTranscript
+                    print("🗣️ Companion received transcript: \(finalTranscript)")
+                    clickyDebugLog("transcript \(clickyDebugSnippet(finalTranscript))")
+                    ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                    self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                }
+            )
+        }
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            clickyDebugLog("shortcut pressed dictationInProgress=\(buddyDictationManager.isDictationInProgress) onboardingVideo=\(showOnboardingVideo)")
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
@@ -500,6 +580,7 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
+                        clickyDebugLog("transcript \(clickyDebugSnippet(finalTranscript))")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
@@ -510,6 +591,7 @@ final class CompanionManager: ObservableObject {
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
+            clickyDebugLog("shortcut released")
             ClickyAnalytics.trackPushToTalkReleased()
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
@@ -524,9 +606,16 @@ final class CompanionManager: ObservableObject {
     private static let companionVoiceResponseSystemPrompt = """
     you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
+    language:
+    - reply in the same language the user spoke.
+    - for this local build, default to natural simplified chinese unless the user explicitly asks for another language.
+    - if the user speaks chinese, answer in simplified chinese even if the screen contains english text.
+    - do not tell the user to allow or grant permissions unless their request is about permissions or a real missing-permission error is present.
+    - never read the [POINT:...] tag aloud. keep it only as a machine-readable suffix.
+
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
-    - all lowercase, casual, warm. no emojis.
+    - if replying in english, use lowercase, casual, warm language. no emojis.
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
     - if the user's question relates to what's on their screen, reference specific things you see.
@@ -540,6 +629,8 @@ final class CompanionManager: ObservableObject {
 
     element pointing:
     you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
+
+    every response must end with exactly one machine tag: either [POINT:x,y:label] or [POINT:none]. if you say you are pointing, guiding, showing, or indicating something, you must use a coordinate tag, not [POINT:none]. never claim you pointed at something unless the tag contains x,y coordinates.
 
     don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
 
@@ -556,7 +647,148 @@ final class CompanionManager: ObservableObject {
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
     """
 
+    private static let pointTagRepairSystemPrompt = """
+    you repair missing clicky pointing tags. you can see the user's screen images and the previous assistant answer.
+
+    return the same assistant answer, but make sure it ends with exactly one machine-readable tag:
+    - [POINT:x,y:label] if the answer refers to a visible UI element, button, menu, toolbar item, field, or screen area.
+    - [POINT:none] only if there is truly no visible target to point at.
+
+    use the screenshot pixel dimensions as the coordinate space. origin is top-left. x increases rightward, y increases downward. do not explain the tag. do not use markdown.
+    """
+
+    private static let pointLocatorSystemPrompt = """
+    you are clicky's precise screen locator. your only job is to identify the exact visible UI target the user should click or look at.
+
+    return exactly one tag and nothing else:
+    [POINT:x,y:label] or [POINT:none]
+
+    rules:
+    - use the screenshot pixel dimensions from the image label as the coordinate space.
+    - origin is the top-left of the screenshot. x increases rightward, y increases downward.
+    - choose the center of the visible target, not the approximate region around it.
+    - for a menu bar item, choose the center of its text or icon.
+    - for a desktop folder/file icon, choose the center of the icon, not the filename baseline and not the surrounding desktop area.
+    - if several matching targets exist, choose the one most directly implied by the user's words and the assistant response.
+    - if the target is not visible, return [POINT:none].
+    - if the target is on a different screen image, append :screenN.
+    """
+
+    private static func userPromptWithPointingContract(_ transcript: String) -> String {
+        """
+        \(transcript)
+
+        internal clicky formatting requirement:
+        - end your entire response with exactly one machine-readable tag: [POINT:x,y:label] or [POINT:none].
+        - if the user asks you to point, show, guide, find a button/menu, or says they cannot find something on screen, use [POINT:x,y:label] for the relevant visible element.
+        - never say you pointed, showed, or indicated something unless the final tag contains x,y coordinates.
+        - the user will not hear the tag; it is only for moving the blue cursor.
+        """
+    }
+
+    private static func shouldRepairMissingPointTag(transcript: String, responseText: String) -> Bool {
+        if responseText.range(of: #"\[POINT:"#, options: .regularExpression) != nil {
+            return false
+        }
+
+        let combinedText = "\(transcript) \(responseText)".lowercased()
+        let pointingKeywords = [
+            "指", "点", "哪里", "找不到", "引导", "按钮", "菜单", "右上角", "左上角",
+            "click", "point", "show me", "where", "button", "menu", "toolbar"
+        ]
+
+        return pointingKeywords.contains { combinedText.contains($0) }
+    }
+
+    private static func shouldLocatePointingTarget(
+        transcript: String,
+        responseText: String,
+        parseResult: PointingParseResult
+    ) -> Bool {
+        if parseResult.coordinate != nil {
+            return true
+        }
+        return shouldRepairMissingPointTag(transcript: transcript, responseText: responseText)
+    }
+
+    private static func isDirectPointingRequest(_ transcript: String) -> Bool {
+        let normalizedText = transcript.lowercased()
+        let directKeywords = [
+            "定位", "指一下", "指给我看", "帮我指", "在哪里", "在哪", "哪里", "找一下", "找找",
+            "图标", "文件夹", "文件", "folder", "file", "icon", "where"
+        ]
+        let complexKeywords = [
+            "怎么", "如何", "步骤", "教我", "解释", "为什么", "开发者模式", "插件", "设置",
+            "how do", "why", "explain"
+        ]
+
+        return directKeywords.contains { normalizedText.contains($0) }
+            && !complexKeywords.contains { normalizedText.contains($0) }
+    }
+
+    private static func pointLocatorPrompt(
+        transcript: String,
+        assistantResponse: String,
+        currentLabel: String?
+    ) -> String {
+        """
+        user transcript:
+        \(transcript)
+
+        assistant response:
+        \(assistantResponse)
+
+        current target label, if any:
+        \(currentLabel ?? "none")
+
+        Identify the exact visible target to point at. Return only the final [POINT:x,y:label] tag.
+        """
+    }
+
     // MARK: - AI Response Pipeline
+
+    private func pointToNativeTarget(_ nativePointingTarget: NativePointingTarget) {
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+            clickyDebugLog("point overlay-show-for-native-target")
+        }
+
+        detectedElementDisplayFrame = nativePointingTarget.displayFrame
+        detectedElementScreenLocation = nativePointingTarget.screenLocation
+        clickyDebugLog("point native-target screenLocation=\(nativePointingTarget.screenLocation) displayFrame=\(nativePointingTarget.displayFrame) source=\(nativePointingTarget.source) label=\(nativePointingTarget.label)")
+        ClickyAnalytics.trackElementPointed(elementLabel: nativePointingTarget.label)
+        print("🎯 Native pointing: \(nativePointingTarget.source) → \"\(nativePointingTarget.label)\"")
+    }
+
+    private func respondToNativeTarget(_ nativePointingTarget: NativePointingTarget, transcript: String) async {
+        voiceState = .idle
+        pointToNativeTarget(nativePointingTarget)
+
+        let spokenText = "我指到 \(nativePointingTarget.label) 了。"
+        conversationHistory.append((
+            userTranscript: transcript,
+            assistantResponse: spokenText
+        ))
+        if conversationHistory.count > 10 {
+            conversationHistory.removeFirst(conversationHistory.count - 10)
+        }
+
+        do {
+            try await elevenLabsTTSClient.speakText(spokenText)
+            voiceState = .responding
+        } catch {
+            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+            print("⚠️ TTS error: \(error)")
+            speakCreditsErrorFallback()
+        }
+
+        if !Task.isCancelled {
+            voiceState = .idle
+            scheduleTransientHideIfNeeded()
+        }
+    }
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
     /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
@@ -572,6 +804,13 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
+                if Self.isDirectPointingRequest(transcript),
+                   let nativePointingTarget = NativeTargetLocator.locate(transcript: transcript, assistantResponse: "") {
+                    clickyDebugLog("pipeline native-fast-path transcript=\(clickyDebugSnippet(transcript))")
+                    await respondToNativeTarget(nativePointingTarget, transcript: transcript)
+                    return
+                }
+
                 // Capture all connected screens so the AI has full context
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
 
@@ -585,16 +824,28 @@ final class CompanionManager: ObservableObject {
                     return (data: capture.imageData, label: capture.label + dimensionInfo)
                 }
 
+                if Self.isDirectPointingRequest(transcript),
+                   let ocrPointingTarget = OCRTargetLocator.locate(
+                    in: screenCaptures,
+                    transcript: transcript,
+                    assistantResponse: "",
+                    currentLabel: nil
+                   ) {
+                    clickyDebugLog("pipeline ocr-fast-path transcript=\(clickyDebugSnippet(transcript))")
+                    await respondToNativeTarget(ocrPointingTarget, transcript: transcript)
+                    return
+                }
+
                 // Pass conversation history so Claude remembers prior exchanges
                 let historyForAPI = conversationHistory.map { entry in
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                var (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
-                    userPrompt: transcript,
+                    userPrompt: Self.userPromptWithPointingContract(transcript),
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
                     }
@@ -603,14 +854,71 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
+                var parseResult = Self.parsePointingCoordinates(from: fullResponseText)
+
+                var nativePointingTarget = NativeTargetLocator.locate(
+                    transcript: transcript,
+                    assistantResponse: parseResult.spokenText
+                )
+
+                if nativePointingTarget == nil {
+                    nativePointingTarget = OCRTargetLocator.locate(
+                        in: screenCaptures,
+                        transcript: transcript,
+                        assistantResponse: parseResult.spokenText,
+                        currentLabel: parseResult.elementLabel
+                    )
+                }
+
+                if nativePointingTarget == nil,
+                   Self.shouldLocatePointingTarget(
+                    transcript: transcript,
+                    responseText: fullResponseText,
+                    parseResult: parseResult
+                ) {
+                    clickyDebugLog("point locator requested")
+                    do {
+                        let locatorPrompt = Self.pointLocatorPrompt(
+                            transcript: transcript,
+                            assistantResponse: parseResult.spokenText,
+                            currentLabel: parseResult.elementLabel
+                        )
+
+                        let (locatorResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                            images: labeledImages,
+                            systemPrompt: Self.pointLocatorSystemPrompt,
+                            conversationHistory: [],
+                            userPrompt: locatorPrompt,
+                            onTextChunk: { _ in }
+                        )
+
+                        let locatorParseResult = Self.parsePointingCoordinates(from: locatorResponseText)
+                        clickyDebugLog("point locator-response \(clickyDebugSnippet(locatorResponseText))")
+                        clickyDebugLog("point locator-parse coordinate=\(String(describing: locatorParseResult.coordinate)) label=\(locatorParseResult.elementLabel ?? "nil") screen=\(String(describing: locatorParseResult.screenNumber))")
+
+                        if locatorParseResult.coordinate != nil {
+                            parseResult = PointingParseResult(
+                                spokenText: parseResult.spokenText,
+                                coordinate: locatorParseResult.coordinate,
+                                elementLabel: locatorParseResult.elementLabel ?? parseResult.elementLabel,
+                                screenNumber: locatorParseResult.screenNumber
+                            )
+                        }
+                    } catch {
+                        clickyDebugLog("point locator failed error=\(error.localizedDescription)")
+                    }
+                }
+
                 let spokenText = parseResult.spokenText
+                clickyDebugLog("llm full-response \(clickyDebugSnippet(fullResponseText))")
+                clickyDebugLog("tts spoken-text \(clickyDebugSnippet(spokenText))")
+                clickyDebugLog("point parse coordinate=\(String(describing: parseResult.coordinate)) label=\(parseResult.elementLabel ?? "nil") screen=\(String(describing: parseResult.screenNumber))")
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
                 // becomes visible and can fly to the target. Without this, the
                 // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
+                let hasPointCoordinate = nativePointingTarget != nil || parseResult.coordinate != nil
                 if hasPointCoordinate {
                     voiceState = .idle
                 }
@@ -625,8 +933,17 @@ final class CompanionManager: ObservableObject {
                     return screenCaptures.first(where: { $0.isCursorScreen })
                 }()
 
-                if let pointCoordinate = parseResult.coordinate,
+                if let nativePointingTarget {
+                    pointToNativeTarget(nativePointingTarget)
+                } else if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
+                    if !isOverlayVisible {
+                        overlayWindowManager.hasShownOverlayBefore = true
+                        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                        isOverlayVisible = true
+                        clickyDebugLog("point overlay-show-for-target")
+                    }
+
                     // Claude's coordinates are in the screenshot's pixel space
                     // (top-left origin, e.g. 1280x831). Scale to the display's
                     // point space (e.g. 1512x982), then convert to AppKit global coords.
@@ -653,8 +970,9 @@ final class CompanionManager: ObservableObject {
                         y: appKitY + displayFrame.origin.y
                     )
 
-                    detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
+                    detectedElementScreenLocation = globalLocation
+                    clickyDebugLog("point target screenLocation=\(globalLocation) displayFrame=\(displayFrame) sourcePixel=\(pointCoordinate)")
                     ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
@@ -761,9 +1079,11 @@ final class CompanionManager: ObservableObject {
 
     /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
     /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
-    static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
-        // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]
-        let pattern = #"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$"#
+    nonisolated static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
+        // Match [POINT:none] or [POINT:123,456:label] or
+        // [POINT:123,456:label:screen2]. MiniMax occasionally omits the final
+        // closing bracket, so accept that malformed suffix and strip it from TTS.
+        let pattern = #"\[POINT:\s*(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\r\n]*?))?(?::screen(\d+))?)\]?\s*$"#
 
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
               let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)) else {

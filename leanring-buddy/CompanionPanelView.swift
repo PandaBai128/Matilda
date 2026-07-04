@@ -30,6 +30,12 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 10)
+
+                voiceInputButton
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -586,6 +592,33 @@ struct CompanionPanelView: View {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
                 )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    private var voiceInputButton: some View {
+        let isActive = companionManager.buddyDictationManager.isDictationInProgress
+            || companionManager.buddyDictationManager.isPreparingToRecord
+
+        return Button(action: {
+            companionManager.togglePanelVoiceInput()
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: isActive ? "stop.fill" : "mic.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 16)
+
+                Text(isActive ? "Stop and send" : "Talk")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundColor(DS.Colors.textOnAccent)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(isActive ? DS.Colors.warning : DS.Colors.accent)
+            )
         }
         .buttonStyle(.plain)
         .pointerCursor()

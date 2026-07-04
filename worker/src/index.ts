@@ -12,21 +12,26 @@
 
 interface Env {
   MINIMAX_API_KEY: string;
+  MINIMAX_API_HOST?: string;
+  MINIMAX_CHAT_MODEL?: string;
+  MINIMAX_THINKING_TYPE?: string;
   MINIMAX_TTS_VOICE_ID?: string;
   MINIMAX_TTS_MODEL?: string;
   TENCENT_ASR_APP_ID: string;
   TENCENT_ASR_SECRET_ID: string;
   TENCENT_ASR_SECRET_KEY: string;
   TENCENT_ASR_ENGINE_MODEL_TYPE?: string;
+  TENCENT_ASR_ENABLE_HOTWORDS?: string;
 }
 
-const MINIMAX_MESSAGES_URL = "https://api.minimax.io/anthropic/v1/messages";
-const MINIMAX_TTS_URL = "https://api.minimax.io/v1/t2a_v2";
 const TENCENT_ASR_HOST = "asr.cloud.tencent.com";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const minimaxAPIHost = (env.MINIMAX_API_HOST || "https://api.minimax.io").replace(/\/+$/, "");
+    const minimaxMessagesURL = `${minimaxAPIHost}/anthropic/v1/messages`;
+    const minimaxTTSURL = `${minimaxAPIHost}/v1/t2a_v2`;
 
     if (request.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
@@ -34,11 +39,11 @@ export default {
 
     try {
       if (url.pathname === "/chat") {
-        return await handleChat(request, env);
+        return await handleChat(request, env, minimaxMessagesURL);
       }
 
       if (url.pathname === "/tts") {
-        return await handleTTS(request, env);
+        return await handleTTS(request, env, minimaxTTSURL);
       }
 
       if (url.pathname === "/transcribe-url") {
@@ -53,13 +58,12 @@ export default {
   },
 };
 
-async function handleChat(request: Request, env: Env): Promise<Response> {
+async function handleChat(request: Request, env: Env, minimaxMessagesURL: string): Promise<Response> {
   const body = await request.json<Record<string, unknown>>();
 
-  body.model = "MiniMax-M3";
-  body.thinking = { type: "disabled" };
+  applyMiniMaxChatDefaults(body, env);
 
-  const response = await fetch(MINIMAX_MESSAGES_URL, {
+  const response = await fetch(minimaxMessagesURL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
@@ -86,7 +90,20 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function handleTTS(request: Request, env: Env): Promise<Response> {
+function applyMiniMaxChatDefaults(body: Record<string, unknown>, env: Env): void {
+  body.model = env.MINIMAX_CHAT_MODEL || "MiniMax-M3";
+
+  const thinkingType = (env.MINIMAX_THINKING_TYPE || "disabled").trim().toLowerCase();
+  if (thinkingType === "omit") {
+    delete body.thinking;
+  } else if (thinkingType === "disabled" || thinkingType === "adaptive") {
+    body.thinking = { type: thinkingType };
+  } else {
+    body.thinking = { type: "adaptive" };
+  }
+}
+
+async function handleTTS(request: Request, env: Env, minimaxTTSURL: string): Promise<Response> {
   const incomingBody = await request.json<{ text?: string }>();
   const text = incomingBody.text?.trim();
 
@@ -94,7 +111,7 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ error: "Missing text for TTS." }, 400);
   }
 
-  const response = await fetch(MINIMAX_TTS_URL, {
+  const response = await fetch(minimaxTTSURL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
@@ -176,9 +193,11 @@ async function handleTranscribeURL(request: Request, env: Env): Promise<Response
     vad_silence_time: "1000",
   };
 
-  const hotwordList = makeHotwordList(body.keyterms || []);
-  if (hotwordList) {
-    params.hotword_list = hotwordList;
+  if (env.TENCENT_ASR_ENABLE_HOTWORDS === "1") {
+    const hotwordList = makeHotwordList(body.keyterms || []);
+    if (hotwordList) {
+      params.hotword_list = hotwordList;
+    }
   }
 
   const signedPath = `/asr/v2/${env.TENCENT_ASR_APP_ID}`;

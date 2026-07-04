@@ -81,7 +81,10 @@ enum CompanionScreenCaptureUtility {
             let filter = SCContentFilter(display: display, excludingWindows: ownAppWindows)
 
             let configuration = SCStreamConfiguration()
-            let maxDimension = 1280
+            // Coordinate pointing depends on small UI elements being legible to
+            // the vision model. 1280px was fast but made menu bar and desktop
+            // icons too small, causing rough coordinates from MiniMax.
+            let maxDimension = 2048
             let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
             if display.width >= display.height {
                 configuration.width = maxDimension
