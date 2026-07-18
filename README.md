@@ -1,4 +1,6 @@
-# Clicky
+# Clicky (MiniMax)
+
+> 当前为开发阶段暂定名称。应用内名称仍保持为 Clicky，功能和界面稳定后再确定正式名称。
 
 Clicky 是一个仅驻留在 macOS 菜单栏的屏幕语音助手。按住 `Control + Option` 说话后，它会：
 
@@ -8,6 +10,19 @@ Clicky 是一个仅驻留在 macOS 菜单栏的屏幕语音助手。按住 `Cont
 4. 在需要定位可见目标时，让蓝色指针移动到模型返回的位置。
 
 这个仓库是在 [farzaa/clicky](https://github.com/farzaa/clicky) 基础上的个人改造版，保留原项目的 MIT License。目前的模型、语音、代理服务、界面和指向链路已经与原项目不同。
+
+## 与原项目的关系
+
+本项目保留了原版 Clicky 的 macOS 菜单栏助手和蓝色指针交互思路，并针对个人使用场景进行了持续改造：
+
+- 将原有 Anthropic/Claude 模型链路替换为 MiniMax-M3 多模态问答；
+- 使用 MiniMax TTS，并增加流式播放、音色浏览、试听、音量、语速和音调设置；
+- 使用腾讯云实时 ASR，保留 Apple Speech 作为本地 fallback；
+- 增加本地 Node 代理，在没有 Cloudflare 服务时也可以运行；
+- 增加最近对话、复制、回答长度控制和更严格的屏幕指向策略；
+- 移除原项目的遥测、发布脚本和当前版本不再使用的服务集成。
+
+这不是 Anthropic 或 MiniMax 的官方项目，也不以完整桌面自动化为目标。当前版本主要用于语音问答、屏幕内容理解和视觉位置指引。
 
 ## 当前能力
 
