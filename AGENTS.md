@@ -92,6 +92,8 @@ open leanring-buddy.xcodeproj
 # deprecated onChange warning in OverlayWindow.swift. Do NOT attempt to fix these.
 ```
 
+After running tests, build the app once more with the Xcode UI before installing it so the installed bundle is not the test host. Keep exactly one usable installation at `~/Applications/Clicky.app`: quit the previous process, replace that bundle, unregister and remove stale Clicky app bundles from DerivedData and temporary locations, then launch the installed copy. Verify Spotlight, Launch Services, and running processes resolve only to that installation before asking the user to grant permissions.
+
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
 
 ## Cloudflare Worker
