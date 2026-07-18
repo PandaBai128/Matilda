@@ -95,7 +95,7 @@ enum ClickyAnalytics {
         ])
     }
 
-    /// Claude's response included a [POINT:x,y:label] coordinate tag,
+    /// MiniMax's response included a normalized [POINT_V2:x,y:label] coordinate tag,
     /// so the buddy is flying to point at a UI element.
     static func trackElementPointed(elementLabel: String?) {
         PostHogSDK.shared.capture("element_pointed", properties: [

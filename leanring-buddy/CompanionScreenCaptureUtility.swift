@@ -14,21 +14,15 @@ struct CompanionScreenCapture {
     let imageData: Data
     let label: String
     let isCursorScreen: Bool
-    let displayWidthInPoints: Int
-    let displayHeightInPoints: Int
     let displayFrame: CGRect
-    let screenshotWidthInPixels: Int
-    let screenshotHeightInPixels: Int
 }
 
 @MainActor
 enum CompanionScreenCaptureUtility {
-    private static let canonicalScreenshotLongEdgeInPixels = 2048
-
     /// Captures all connected displays as JPEG data, labeling each with
     /// whether the user's cursor is on that screen. This gives the AI
     /// full context across multiple monitors.
-    static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+    static func captureAllScreensAsJPEG(longEdgeInPixels: Int = 2048) async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -85,14 +79,13 @@ enum CompanionScreenCaptureUtility {
             // Coordinate pointing depends on small UI elements being legible to
             // the vision model. 1280px was fast but made menu bar and desktop
             // icons too small, causing rough coordinates from MiniMax.
-            let maxDimension = canonicalScreenshotLongEdgeInPixels
             let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
             if display.width >= display.height {
-                configuration.width = maxDimension
-                configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
+                configuration.width = longEdgeInPixels
+                configuration.height = Int(CGFloat(longEdgeInPixels) / aspectRatio)
             } else {
-                configuration.height = maxDimension
-                configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
+                configuration.height = longEdgeInPixels
+                configuration.width = Int(CGFloat(longEdgeInPixels) * aspectRatio)
             }
 
             let cgImage = try await SCScreenshotManager.captureImage(
@@ -118,11 +111,7 @@ enum CompanionScreenCaptureUtility {
                 imageData: jpegData,
                 label: screenLabel,
                 isCursorScreen: isCursorScreen,
-                displayWidthInPoints: Int(displayFrame.width),
-                displayHeightInPoints: Int(displayFrame.height),
-                displayFrame: displayFrame,
-                screenshotWidthInPixels: configuration.width,
-                screenshotHeightInPixels: configuration.height
+                displayFrame: displayFrame
             ))
         }
 

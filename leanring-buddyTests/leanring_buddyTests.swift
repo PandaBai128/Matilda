@@ -7,8 +7,9 @@
 
 import Testing
 import CoreGraphics
-@testable import leanring_buddy
+@testable import Clicky
 
+@MainActor
 struct leanring_buddyTests {
 
     @Test func firstPermissionRequestUsesSystemPromptOnly() async throws {
@@ -38,24 +39,88 @@ struct leanring_buddyTests {
         #expect(shouldTreatPermissionAsGranted)
     }
 
-    @Test func pointParserAcceptsWellFormedCoordinateTag() async throws {
+    @Test func pointParserAcceptsWellFormedNormalizedCoordinateTag() async throws {
         let result = CompanionManager.parsePointingCoordinates(
-            from: "点这里。[POINT:1263,94:三点菜单]"
+            from: "点这里。[POINT_V2:305,259:关闭窗口]"
         )
 
         #expect(result.spokenText == "点这里。")
-        #expect(result.coordinate == CGPoint(x: 1263, y: 94))
-        #expect(result.elementLabel == "三点菜单")
+        #expect(result.coordinate == CGPoint(x: 305, y: 259))
+        #expect(result.elementLabel == "关闭窗口")
     }
 
     @Test func pointParserAcceptsMissingClosingBracketFromMiniMax() async throws {
         let result = CompanionManager.parsePointingCoordinates(
-            from: "点这里。[POINT:1263,94:三点菜单"
+            from: "点这里。[POINT_V2:305,259:关闭窗口"
         )
 
         #expect(result.spokenText == "点这里。")
-        #expect(result.coordinate == CGPoint(x: 1263, y: 94))
-        #expect(result.elementLabel == "三点菜单")
+        #expect(result.coordinate == CGPoint(x: 305, y: 259))
+        #expect(result.elementLabel == "关闭窗口")
+    }
+
+    @Test func pointParserRejectsOutOfRangeNormalizedCoordinates() async throws {
+        let result = CompanionManager.parsePointingCoordinates(
+            from: "点这里。[POINT_V2:1263,94:关闭窗口]"
+        )
+
+        #expect(result.spokenText == "点这里。")
+        #expect(result.coordinate == nil)
+    }
+
+    @Test func pointParserStripsMalformedV2TagWithoutMovingCursor() async throws {
+        let result = CompanionManager.parsePointingCoordinates(
+            from: "点这里。[POINT_V2:-20,10000:关闭窗口]"
+        )
+
+        #expect(result.spokenText == "点这里。")
+        #expect(result.coordinate == nil)
+    }
+
+    @Test func pointParserAcceptsSecondaryScreenSuffix() async throws {
+        let result = CompanionManager.parsePointingCoordinates(
+            from: "点这里。[POINT_V2:305,259:关闭窗口:screen2]"
+        )
+
+        #expect(result.coordinate == CGPoint(x: 305, y: 259))
+        #expect(result.elementLabel == "关闭窗口")
+        #expect(result.screenNumber == 2)
+    }
+
+    @Test func pointParserStripsLegacyPixelTagWithoutMovingCursor() async throws {
+        let result = CompanionManager.parsePointingCoordinates(
+            from: "点这里。[POINT:1263,94:关闭窗口]"
+        )
+
+        #expect(result.spokenText == "点这里。")
+        #expect(result.coordinate == nil)
+    }
+
+    @Test func normalizedCoordinateMapsToDisplayCenter() async throws {
+        let displayFrame = CGRect(x: 100, y: -200, width: 1728, height: 1117)
+
+        let screenLocation = CompanionManager.globalScreenLocation(
+            fromNormalizedCoordinate: CGPoint(x: 500, y: 500),
+            displayFrame: displayFrame
+        )
+
+        #expect(screenLocation == CGPoint(x: 964, y: 358.5))
+    }
+
+    @Test func normalizedCoordinateMapsTopLeftAndBottomRight() async throws {
+        let displayFrame = CGRect(x: 100, y: -200, width: 1728, height: 1117)
+
+        let topLeftScreenLocation = CompanionManager.globalScreenLocation(
+            fromNormalizedCoordinate: CGPoint(x: 0, y: 0),
+            displayFrame: displayFrame
+        )
+        let bottomRightScreenLocation = CompanionManager.globalScreenLocation(
+            fromNormalizedCoordinate: CGPoint(x: 1000, y: 1000),
+            displayFrame: displayFrame
+        )
+
+        #expect(topLeftScreenLocation == CGPoint(x: 100, y: 917))
+        #expect(bottomRightScreenLocation == CGPoint(x: 1828, y: -200))
     }
 
     @Test func ordinaryKnowledgeQuestionDoesNotRequestPointing() async throws {

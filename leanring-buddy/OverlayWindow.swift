@@ -169,6 +169,7 @@ struct BlueCursorView: View {
 
     private let onboardingVideoPlayerWidth: CGFloat = 330
     private let onboardingVideoPlayerHeight: CGFloat = 186
+    private let pointingTriangleTipCompensation = CGPoint(x: 5.3, y: 7.6)
 
     private let fullWelcomeMessage = "hey! i'm clicky"
 
@@ -466,11 +467,11 @@ struct BlueCursorView: View {
         // Convert the AppKit screen location to SwiftUI coordinates for this screen
         let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
 
-        // Offset the target so the buddy sits beside the element rather than
-        // directly on top of it — 8px to the right, 12px below.
+        // The model identifies the target center. Offset the triangle's center
+        // so its rotated tip, rather than its bounding box center, lands there.
         let offsetTarget = CGPoint(
-            x: targetInSwiftUI.x + 8,
-            y: targetInSwiftUI.y + 12
+            x: targetInSwiftUI.x + pointingTriangleTipCompensation.x,
+            y: targetInSwiftUI.y + pointingTriangleTipCompensation.y
         )
 
         // Clamp target to screen bounds with padding

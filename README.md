@@ -126,7 +126,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 
 If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to Tencent Cloud ASR, sends the transcript + screenshot to MiniMax via streaming SSE, and plays the response through MiniMax TTS. The model can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied or signed through a Cloudflare Worker.
+**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to Tencent Cloud ASR, sends the transcript + screenshot to MiniMax via streaming SSE, and plays the response through MiniMax TTS. The model can embed normalized `[POINT_V2:x,y:label:screenN]` tags in a fixed 0–1000 coordinate space to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied or signed through a Cloudflare Worker.
 
 ## Project structure
 

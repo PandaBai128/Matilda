@@ -122,7 +122,10 @@ final class CompanionManager: ObservableObject {
     /// through this so keys never ship in the app binary.
     private static let workerBaseURL = AppBundleConfiguration.workerBaseURL
     private static let maxConversationHistoryCount = 10
+    private static let pointingConversationHistoryCount = 2
     private static let maxAssistantHistoryCharacters = 2_400
+    private static let standardScreenshotLongEdgeInPixels = 2048
+    private static let pointingScreenshotLongEdgeInPixels = 3072
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -639,7 +642,7 @@ final class CompanionManager: ObservableObject {
     - for this local build, default to natural simplified chinese unless the user explicitly asks for another language.
     - if the user speaks chinese, answer in simplified chinese even if the screen contains english text.
     - do not tell the user to allow or grant permissions unless their request is about permissions or a real missing-permission error is present.
-    - never read the [POINT:...] tag aloud. keep it only as a machine-readable suffix.
+    - never read a [POINT_V2:...] or legacy [POINT:...] tag aloud. keep it only as a machine-readable suffix.
 
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
@@ -657,9 +660,9 @@ final class CompanionManager: ObservableObject {
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
     element pointing:
-    - pointing is opt-in for each request. only return a [POINT:...] tag when the current user message includes an internal clicky pointing requirement.
-    - without that requirement, never emit a [POINT:...] tag and never claim that you pointed, showed, guided, or indicated a screen location.
-    - when pointing is requested but the exact target is not clearly visible, return [POINT:none] rather than guessing.
+    - pointing is opt-in for each request. only return a [POINT_V2:...] tag when the current user message includes an internal clicky pointing requirement.
+    - without that requirement, never emit any point tag and never claim that you pointed, showed, guided, or indicated a screen location.
+    - when pointing is requested but the exact target is not clearly visible, return [POINT_V2:none] rather than guessing.
     """
 
     private static func userPromptWithPointingContract(
@@ -670,7 +673,7 @@ final class CompanionManager: ObservableObject {
             return """
             \(transcript)
 
-            internal clicky requirement: this is not a pointing request. answer normally. do not output any [POINT:...] tag and do not claim to point at a screen location.
+            internal clicky requirement: this is not a pointing request. answer normally. do not output any [POINT_V2:...] or [POINT:...] tag and do not claim to point at a screen location.
             """
         }
 
@@ -678,11 +681,13 @@ final class CompanionManager: ObservableObject {
         \(transcript)
 
         internal clicky pointing requirement:
-        - end your entire response with exactly one machine-readable tag: [POINT:x,y:label] or [POINT:none].
-        - use the exact pixel dimensions stated in the screenshot label as the coordinate space. origin is top-left; x increases rightward and y increases downward.
-        - choose the center of the visible target. for a desktop file or folder, choose the center of its icon, not its filename. for a button or menu item, choose the center of the clickable control.
-        - use integer coordinates and a short 1-3 word label: [POINT:x,y:label].
-        - if the exact requested target is not visible or you are uncertain which target matches, use [POINT:none]. do not guess an approximate area.
+        - inspect the current screenshot and end your entire response with exactly one machine-readable V2 tag: [POINT_V2:x,y:label] or [POINT_V2:none]. never use the legacy [POINT:...] format.
+        - x and y are normalized integers from 0 through 1000, independent of the screenshot's pixel dimensions. origin is top-left; x increases rightward and y increases downward.
+        - calibration anchors: top-left is (0,0), exact center is (500,500), and bottom-right is (1000,1000).
+        - first identify the target's visible bounding box, then visually verify and return its center. for a desktop file or folder, use the center of its icon, not its filename. for a button or menu item, use the center of the clickable control.
+        - use a short 1-3 word label: [POINT_V2:x,y:label]. if the target is on a labeled secondary screen, append its screen number: [POINT_V2:x,y:label:screenN].
+        - do not reuse coordinates from earlier messages and do not infer them from a typical layout. inspect the current screenshot every time.
+        - if the exact requested target is not visible or you are uncertain which target matches, use [POINT_V2:none]. do not guess an approximate area.
         - never say you pointed, showed, or indicated something unless the tag contains coordinates. the user will not hear the tag.
         """
     }
@@ -720,21 +725,27 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                // Small controls need more source pixels for reliable pointing,
+                // while ordinary chat keeps the lighter screenshot payload.
+                let screenshotLongEdgeInPixels = shouldRequestPointing
+                    ? Self.pointingScreenshotLongEdgeInPixels
+                    : Self.standardScreenshotLongEdgeInPixels
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(
+                    longEdgeInPixels: screenshotLongEdgeInPixels
+                )
 
                 guard !Task.isCancelled else { return }
 
-                // Build image labels with the actual screenshot pixel dimensions
-                // so MiniMax's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
                 let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
+                    return (data: capture.imageData, label: capture.label)
                 }
 
-                // Pass conversation history so MiniMax remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
+                // Older screen coordinates are actively harmful to a new pointing
+                // request, so location work receives only the latest two exchanges.
+                let conversationHistoryForRequest = shouldRequestPointing
+                    ? Array(conversationHistory.suffix(Self.pointingConversationHistoryCount))
+                    : conversationHistory
+                let historyForAPI = conversationHistoryForRequest.map { entry in
                     (
                         userPlaceholder: entry.userTranscript,
                         assistantResponse: Self.textForConversationContext(from: entry.assistantResponse)
@@ -749,6 +760,7 @@ final class CompanionManager: ObservableObject {
                         transcript,
                         shouldRequestPointing: shouldRequestPointing
                     ),
+                    temperature: shouldRequestPointing ? 0.1 : nil,
                     onTextChunk: { _ in
                         // No streaming text display — spinner stays until TTS plays
                     }
@@ -794,34 +806,15 @@ final class CompanionManager: ObservableObject {
                         clickyDebugLog("point overlay-show-for-target")
                     }
 
-                    // MiniMax coordinates use the fixed 2048-long-edge screenshot
-                    // space. Scale once to the current macOS display point space.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
                     let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
+                    let globalLocation = Self.globalScreenLocation(
+                        fromNormalizedCoordinate: pointCoordinate,
+                        displayFrame: displayFrame
                     )
 
                     detectedElementDisplayFrame = displayFrame
                     detectedElementScreenLocation = globalLocation
-                    clickyDebugLog("point target screenLocation=\(globalLocation) displayFrame=\(displayFrame) sourcePixel=\(pointCoordinate)")
+                    clickyDebugLog("point target screenLocation=\(globalLocation) displayFrame=\(displayFrame) normalized1000=\(pointCoordinate)")
                     ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
@@ -910,11 +903,11 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Point Tag Parsing
 
-    /// Result of parsing a [POINT:...] tag from MiniMax's response.
+    /// Result of parsing a normalized point tag from MiniMax's response.
     struct PointingParseResult {
-        /// The response text with the [POINT:...] tag removed — this is what gets spoken.
+        /// The response text with the point tag removed — this is what gets spoken.
         let spokenText: String
-        /// The parsed pixel coordinate, or nil if MiniMax said "none" or no tag was found.
+        /// The parsed 0...1000 coordinate, or nil when no valid V2 coordinate was found.
         let coordinate: CGPoint?
         /// Short label describing the element (e.g. "run button"), or "none".
         let elementLabel: String?
@@ -922,48 +915,111 @@ final class CompanionManager: ObservableObject {
         let screenNumber: Int?
     }
 
-    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of MiniMax's response.
-    /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
+    /// Parses a normalized V2 point tag from the end of MiniMax's response.
+    /// Legacy pixel tags are stripped so they are never spoken, but cannot move the cursor.
     nonisolated static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
-        // Match [POINT:none] or [POINT:123,456:label] or
-        // [POINT:123,456:label:screen2]. MiniMax occasionally omits the final
-        // closing bracket, so accept that malformed suffix and strip it from TTS.
-        let pattern = #"\[POINT:\s*(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\r\n]*?))?(?::screen(\d+))?)\]?\s*$"#
+        let normalizedPointPattern = #"\[POINT_V2:\s*(?:none|(\d{1,4})\s*,\s*(\d{1,4})(?::([^\]:\r\n]*?))?(?::screen(\d+))?)\]?\s*$"#
+        let responseRange = NSRange(responseText.startIndex..., in: responseText)
 
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
-              let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)) else {
-            // No tag found at all
-            return PointingParseResult(spokenText: responseText, coordinate: nil, elementLabel: nil, screenNumber: nil)
+        if let normalizedPointRegex = try? NSRegularExpression(pattern: normalizedPointPattern),
+           let match = normalizedPointRegex.firstMatch(in: responseText, range: responseRange),
+           let tagRange = Range(match.range, in: responseText) {
+            let spokenText = String(responseText[..<tagRange.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard let xRange = Range(match.range(at: 1), in: responseText),
+                  let yRange = Range(match.range(at: 2), in: responseText),
+                  let xCoordinate = Double(responseText[xRange]),
+                  let yCoordinate = Double(responseText[yRange]) else {
+                return PointingParseResult(
+                    spokenText: spokenText,
+                    coordinate: nil,
+                    elementLabel: "none",
+                    screenNumber: nil
+                )
+            }
+
+            let elementLabel: String? = {
+                guard let labelRange = Range(match.range(at: 3), in: responseText) else {
+                    return nil
+                }
+                return String(responseText[labelRange]).trimmingCharacters(in: .whitespaces)
+            }()
+            let screenNumber: Int? = {
+                guard let screenRange = Range(match.range(at: 4), in: responseText) else {
+                    return nil
+                }
+                return Int(responseText[screenRange])
+            }()
+
+            guard (0...1000).contains(xCoordinate),
+                  (0...1000).contains(yCoordinate) else {
+                return PointingParseResult(
+                    spokenText: spokenText,
+                    coordinate: nil,
+                    elementLabel: elementLabel,
+                    screenNumber: screenNumber
+                )
+            }
+
+            return PointingParseResult(
+                spokenText: spokenText,
+                coordinate: CGPoint(x: xCoordinate, y: yCoordinate),
+                elementLabel: elementLabel,
+                screenNumber: screenNumber
+            )
         }
 
-        // Remove the tag from the spoken text
-        let tagRange = Range(match.range, in: responseText)!
-        let spokenText = String(responseText[..<tagRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Check if it's [POINT:none]
-        guard match.numberOfRanges >= 3,
-              let xRange = Range(match.range(at: 1), in: responseText),
-              let yRange = Range(match.range(at: 2), in: responseText),
-              let x = Double(responseText[xRange]),
-              let y = Double(responseText[yRange]) else {
-            return PointingParseResult(spokenText: spokenText, coordinate: nil, elementLabel: "none", screenNumber: nil)
+        let malformedV2PointPattern = #"\[POINT_V2:[^\]\r\n]*\]?\s*$"#
+        if let malformedV2PointRegex = try? NSRegularExpression(pattern: malformedV2PointPattern),
+           let match = malformedV2PointRegex.firstMatch(in: responseText, range: responseRange),
+           let tagRange = Range(match.range, in: responseText) {
+            let spokenText = String(responseText[..<tagRange.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return PointingParseResult(
+                spokenText: spokenText,
+                coordinate: nil,
+                elementLabel: nil,
+                screenNumber: nil
+            )
         }
 
-        var elementLabel: String? = nil
-        if match.numberOfRanges >= 4, let labelRange = Range(match.range(at: 3), in: responseText) {
-            elementLabel = String(responseText[labelRange]).trimmingCharacters(in: .whitespaces)
-        }
-
-        var screenNumber: Int? = nil
-        if match.numberOfRanges >= 5, let screenRange = Range(match.range(at: 4), in: responseText) {
-            screenNumber = Int(responseText[screenRange])
+        let legacyPointPattern = #"\[POINT:\s*(?:none|\d+\s*,\s*\d+(?::[^\]\r\n]*)?)\]?\s*$"#
+        if let legacyPointRegex = try? NSRegularExpression(pattern: legacyPointPattern),
+           let match = legacyPointRegex.firstMatch(in: responseText, range: responseRange),
+           let tagRange = Range(match.range, in: responseText) {
+            let spokenText = String(responseText[..<tagRange.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return PointingParseResult(
+                spokenText: spokenText,
+                coordinate: nil,
+                elementLabel: nil,
+                screenNumber: nil
+            )
         }
 
         return PointingParseResult(
-            spokenText: spokenText,
-            coordinate: CGPoint(x: x, y: y),
-            elementLabel: elementLabel,
-            screenNumber: screenNumber
+            spokenText: responseText,
+            coordinate: nil,
+            elementLabel: nil,
+            screenNumber: nil
+        )
+    }
+
+    /// Converts a normalized top-left-origin model coordinate into AppKit's
+    /// global bottom-left-origin screen coordinate system.
+    nonisolated static func globalScreenLocation(
+        fromNormalizedCoordinate normalizedCoordinate: CGPoint,
+        displayFrame: CGRect
+    ) -> CGPoint {
+        let clampedXCoordinate = max(0, min(normalizedCoordinate.x, 1000))
+        let clampedYCoordinate = max(0, min(normalizedCoordinate.y, 1000))
+        let displayLocalX = clampedXCoordinate / 1000 * displayFrame.width
+        let displayLocalYFromTop = clampedYCoordinate / 1000 * displayFrame.height
+
+        return CGPoint(
+            x: displayFrame.origin.x + displayLocalX,
+            y: displayFrame.origin.y + displayFrame.height - displayLocalYFromTop
         )
     }
 
@@ -1139,13 +1195,13 @@ final class CompanionManager: ObservableObject {
 
     make a short quirky 3-6 word observation about the specific thing you picked — something fun, playful, or curious that shows you actually read/recognized it. no emojis ever. NEVER quote or repeat text you see on screen — just react to it. keep it to 6 words max, no exceptions.
 
-    CRITICAL COORDINATE RULE: you MUST only pick elements near the CENTER of the screen. your x coordinate must be between 20%-80% of the image width. your y coordinate must be between 20%-80% of the image height. do NOT pick anything in the top 20%, bottom 20%, left 20%, or right 20% of the screen. no menu bar items, no dock icons, no sidebar items, no items near any edge. only things clearly in the middle area of the screen. if the only interesting things are near the edges, pick something boring in the center instead.
+    CRITICAL COORDINATE RULE: use normalized integer coordinates from 0 through 1000. top-left is (0,0), center is (500,500), and bottom-right is (1000,1000). you MUST only pick elements near the CENTER of the screen: both x and y must be between 200 and 800. do NOT pick menu bar items, dock icons, sidebar items, or anything near an edge. if the only interesting things are near the edges, pick something boring in the center instead.
 
     respond with ONLY your short comment followed by the coordinate tag. nothing else. all lowercase.
 
-    format: your comment [POINT:x,y:label]
+    format: your comment [POINT_V2:x,y:label]
 
-    the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. origin (0,0) is top-left. x increases rightward, y increases downward.
+    visually identify the target's bounding box, verify it against the current screenshot, and return the center. never use the legacy [POINT:...] format.
     """
 
     /// Captures a screenshot and asks Claude to find something interesting to
@@ -1157,7 +1213,9 @@ final class CompanionManager: ObservableObject {
 
         Task {
             do {
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(
+                    longEdgeInPixels: Self.pointingScreenshotLongEdgeInPixels
+                )
 
                 // Only send the cursor screen so Claude can't pick something
                 // on a different monitor that we can't point at.
@@ -1166,13 +1224,13 @@ final class CompanionManager: ObservableObject {
                     return
                 }
 
-                let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
-                let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
+                let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label)]
 
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
+                    temperature: 0.1,
                     onTextChunk: { _ in }
                 )
 
@@ -1183,20 +1241,10 @@ final class CompanionManager: ObservableObject {
                     return
                 }
 
-                let screenshotWidth = CGFloat(cursorScreenCapture.screenshotWidthInPixels)
-                let screenshotHeight = CGFloat(cursorScreenCapture.screenshotHeightInPixels)
-                let displayWidth = CGFloat(cursorScreenCapture.displayWidthInPoints)
-                let displayHeight = CGFloat(cursorScreenCapture.displayHeightInPoints)
                 let displayFrame = cursorScreenCapture.displayFrame
-
-                let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-                let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-                let appKitY = displayHeight - displayLocalY
-                let globalLocation = CGPoint(
-                    x: displayLocalX + displayFrame.origin.x,
-                    y: appKitY + displayFrame.origin.y
+                let globalLocation = Self.globalScreenLocation(
+                    fromNormalizedCoordinate: pointCoordinate,
+                    displayFrame: displayFrame
                 )
 
                 // Set custom bubble text so the pointing animation uses Claude's
