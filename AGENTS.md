@@ -7,25 +7,24 @@
 
 macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via Tencent Cloud ASR streaming, and sends the transcript + a screenshot of the user's screen to MiniMax. MiniMax responds with text (streamed via SSE) and voice (MiniMax TTS). A blue cursor overlay can fly to and point at UI elements the model references on any connected monitor.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+API keys live in the proxy layer: `worker/.dev.vars` for local development or Cloudflare Worker secrets for remote deployment. Nothing sensitive ships in the app.
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: MiniMax-M3 via Cloudflare Worker proxy with Anthropic-compatible SSE streaming
+- **AI Chat**: MiniMax-M3 via the local Node or Cloudflare Worker proxy with Anthropic-compatible SSE streaming
 - **Speech-to-Text**: Tencent Cloud ASR real-time streaming via signed websocket URL, with AssemblyAI, OpenAI, and Apple Speech still available as fallback implementations
-- **Text-to-Speech**: MiniMax T2A via Cloudflare Worker proxy. LLM text is segmented at sentence boundaries as it streams; MiniMax audio frames are parsed incrementally and played through a cancellable Audio Queue before each MP3 finishes downloading.
+- **Text-to-Speech**: MiniMax T2A via the proxy. LLM text is segmented at sentence boundaries as it streams; MiniMax audio frames are parsed incrementally and played through a cancellable Audio Queue before each MP3 finishes downloading.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: The vision model embeds normalized `[POINT_V2:x,y:label:screenN]` tags using a fixed 0–1000 coordinate space. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target. Legacy `[POINT:...]` tags are stripped but never move the cursor.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
-- **Analytics**: PostHog via `ClickyAnalytics.swift`
 
-### API Proxy (Cloudflare Worker)
+### API Proxy (Local Node or Cloudflare Worker)
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+MiniMax requests go through either `worker/local-server.mjs` or the Cloudflare Worker in `worker/src/index.ts`. The proxy also signs a short-lived Tencent ASR WebSocket URL; the app then streams microphone audio directly to that signed Tencent endpoint.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
@@ -35,8 +34,8 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | `POST /voices` | `api.minimax.io/v1/get_voice` | List system and account-specific MiniMax voices |
 | `POST /transcribe-url` | Signed `asr.cloud.tencent.com` websocket URL | Fetches a short-lived Tencent Cloud ASR websocket URL |
 
-Worker secrets: `MINIMAX_API_KEY`, `TENCENT_ASR_APP_ID`, `TENCENT_ASR_SECRET_ID`, `TENCENT_ASR_SECRET_KEY`
-Worker vars: `MINIMAX_TTS_MODEL`, `MINIMAX_TTS_VOICE_ID`, `MINIMAX_TTS_VOLUME`, `TENCENT_ASR_ENGINE_MODEL_TYPE`
+Required proxy credentials: `MINIMAX_API_KEY`, `TENCENT_ASR_APP_ID`, `TENCENT_ASR_SECRET_ID`, `TENCENT_ASR_SECRET_KEY`
+Optional proxy configuration: `MINIMAX_API_HOST`, `MINIMAX_CHAT_MODEL`, `MINIMAX_THINKING_TYPE`, `MINIMAX_TTS_MODEL`, `MINIMAX_TTS_VOICE_ID`, `MINIMAX_TTS_VOLUME`, `TENCENT_ASR_ENGINE_MODEL_TYPE`, `TENCENT_ASR_ENABLE_HOTWORDS`
 
 ### Key Architecture Decisions
 
@@ -54,38 +53,37 @@ Worker vars: `MINIMAX_TTS_MODEL`, `MINIMAX_TTS_VOICE_ID`, `MINIMAX_TTS_VOLUME`, 
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1070 | Central state machine. Owns dictation, shortcut monitoring, screen capture, vision API, streaming TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, persisted response-length and TTS settings, and cursor visibility. Coordinates the full push-to-talk → screenshot → MiniMax → TTS → optional pointing pipeline. |
-| `PointingRequestPolicy.swift` | ~105 | Transcript-only policies that request cursor guidance for visible targets and high-resolution screenshots for on-screen text extraction while excluding non-visual topics. |
+| `leanring_buddyApp.swift` | ~68 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
+| `CompanionManager.swift` | ~1050 | Central state machine. Owns dictation, shortcut monitoring, screen capture, vision API, streaming TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, persisted response-length and TTS settings, and cursor visibility. Coordinates the full push-to-talk → screenshot → MiniMax → TTS → optional pointing pipeline. |
+| `PointingRequestPolicy.swift` | ~96 | Transcript-only policies that request cursor guidance for visible targets and high-resolution screenshots for on-screen text extraction while excluding non-visual topics. |
 | `MenuBarPanelManager.swift` | ~259 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel, opens the standalone voice settings window, and installs click-outside-to-dismiss monitoring. |
 | `CompanionPanelView.swift` | ~1000 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, brief/normal/detailed response control, recent conversation history with copy controls, model picker, selected voice summary, permissions UI, and quit button. Dark aesthetic using `DS` design system. |
 | `VoiceSettingsView.swift` | ~362 | Searchable and source-filtered MiniMax voice browser with cancellable per-voice preview, editable preview text, supported volume, speed, and pitch controls, and visible TTS errors. |
 | `VoiceSettingsWindowManager.swift` | ~53 | Owns the standalone resizable NSPanel that hosts `VoiceSettingsView`. |
 | `OverlayWindow.swift` | ~702 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
-| `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
-| `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
-| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — Tencent, AssemblyAI, OpenAI, or Apple Speech. |
+| `CompanionScreenCaptureUtility.swift` | ~125 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
+| `BuddyDictationManager.swift` | ~903 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
+| `BuddyTranscriptionProvider.swift` | ~127 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — Tencent, AssemblyAI, OpenAI, or Apple Speech. |
 | `TencentASRStreamingTranscriptionProvider.swift` | ~370 | Streaming transcription provider. Fetches a signed Tencent Cloud ASR websocket URL from the Worker, opens the realtime ASR websocket, streams PCM16 audio, tracks sentence transcripts, and delivers finalized text on key-up. |
 | `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Streaming transcription provider. Fetches temp tokens from the Cloudflare Worker, opens an AssemblyAI v3 websocket, streams PCM16 audio, tracks turn-based transcripts, and delivers finalized text on key-up. Shares a single URLSession across all sessions. |
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
-| `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
-| `ClaudeAPI.swift` | ~291 | MiniMax-compatible vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
+| `GlobalPushToTalkShortcutMonitor.swift` | ~179 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
+| `ClaudeAPI.swift` | ~295 | MiniMax-compatible vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
-| `ElevenLabsTTSClient.swift` | ~442 | MiniMax TTS client. Streams response speech through the Worker, retains cancellation-safe complete-file voice previews, and coordinates ordered sentence playback. |
+| `ElevenLabsTTSClient.swift` | ~448 | MiniMax TTS client. Streams response speech through the Worker, retains cancellation-safe complete-file voice previews, and coordinates ordered sentence playback. |
 | `StreamingMP3AudioPlayer.swift` | ~305 | Incremental MP3 parser and Audio Queue player used by response TTS. Reuses one output queue across sentence streams and supports immediate cancellation. |
-| `StreamingSpeechSegmenter.swift` | ~180 | Converts accumulated LLM text into complete speakable sentences, skips fenced code and point tags, and feeds ordered segments into the MiniMax TTS playback queue. |
+| `StreamingSpeechSegmenter.swift` | ~163 | Converts accumulated LLM text into complete speakable sentences, skips fenced code and point tags, and feeds ordered segments into the MiniMax TTS playback queue. |
 | `ElementLocationDetector.swift` | ~335 | Legacy Claude Computer Use coordinate helper. It is not part of the active MiniMax response pipeline. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
-| `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
-| `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
+| `AppBundleConfiguration.swift` | ~32 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
 | `worker/src/index.ts` | ~415 | Cloudflare Worker proxy. Routes include MiniMax chat, complete and streaming TTS, voice catalog, and Tencent ASR signed websocket URLs. |
 | `worker/src/minimax-sse-audio.ts` | ~86 | Incremental MiniMax SSE audio decoder and Cloudflare stream adapter with upstream cancellation propagation. |
 | `worker/src/minimax-tts-capabilities.ts` | ~3 | MiniMax TTS model capability checks used to gate unsupported request settings. |
-| `worker/local-server.mjs` | ~494 | Local Node proxy alternative with upstream cancellation, response backpressure handling, and the same API routes as the Worker. |
+| `worker/local-server.mjs` | ~500 | Local Node proxy alternative with upstream cancellation, response backpressure handling, and the same API routes as the Worker. |
 
 ## Build & Run
 
@@ -116,9 +114,12 @@ npx wrangler secret put TENCENT_ASR_SECRET_KEY
 # Deploy
 npx wrangler deploy
 
-# Local dev (create worker/.dev.vars with your keys)
-npx wrangler dev
+# Local Node proxy (copy the safe template first)
+cp .dev.vars.example .dev.vars
+npm run local
 ```
+
+The repository intentionally has no Xcode unit-test or UI-test targets. Worker transport tests remain under `worker/test` and run with `npm test`.
 
 ## Code Style & Conventions
 

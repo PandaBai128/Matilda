@@ -10,7 +10,6 @@
 import AVFoundation
 import Combine
 import Foundation
-import PostHog
 import ScreenCaptureKit
 import SwiftUI
 
@@ -383,7 +382,6 @@ final class CompanionManager: ObservableObject {
         let previouslyHadAccessibility = hasAccessibilityPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
-        let previouslyHadAll = allPermissionsGranted
 
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
@@ -409,25 +407,12 @@ final class CompanionManager: ObservableObject {
             print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
         }
 
-        // Track individual permission grants as they happen
-        if !previouslyHadAccessibility && hasAccessibilityPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
-        }
-        if !previouslyHadScreenRecording && hasScreenRecordingPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
-        }
-        if !previouslyHadMicrophone && hasMicrophonePermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "microphone")
-        }
         // Screen content permission is persisted — once the user has approved the
         // SCShareableContent picker, we don't need to re-check it.
         if !hasScreenContentPermission {
             hasScreenContentPermission = UserDefaults.standard.bool(forKey: "hasScreenContentPermission")
         }
 
-        if !previouslyHadAll && allPermissionsGranted {
-            ClickyAnalytics.trackAllPermissionsGranted()
-        }
     }
 
     /// Triggers the macOS screen content picker by performing a dummy
@@ -459,7 +444,6 @@ final class CompanionManager: ObservableObject {
                     guard didCapture else { return }
                     hasScreenContentPermission = true
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
                     if allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
@@ -551,7 +535,6 @@ final class CompanionManager: ObservableObject {
     func togglePanelVoiceInput() {
         if buddyDictationManager.isDictationInProgress || buddyDictationManager.isPreparingToRecord {
             clickyDebugLog("panel voice-button stop")
-            ClickyAnalytics.trackPushToTalkReleased()
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -575,7 +558,6 @@ final class CompanionManager: ObservableObject {
         voiceState = .idle
         clearDetectedElementLocation()
 
-        ClickyAnalytics.trackPushToTalkStarted()
 
         pendingKeyboardShortcutStartTask?.cancel()
         pendingKeyboardShortcutStartTask = Task {
@@ -588,7 +570,6 @@ final class CompanionManager: ObservableObject {
                     self?.lastTranscript = finalTranscript
                     print("🗣️ Companion received transcript: \(finalTranscript)")
                     clickyDebugLog("transcript \(clickyDebugSnippet(finalTranscript))")
-                    ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
                     self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                 }
             )
@@ -622,7 +603,6 @@ final class CompanionManager: ObservableObject {
             voiceState = .idle
             clearDetectedElementLocation()
 
-            ClickyAnalytics.trackPushToTalkStarted()
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
@@ -635,7 +615,6 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         clickyDebugLog("transcript \(clickyDebugSnippet(finalTranscript))")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
                 )
@@ -646,7 +625,6 @@ final class CompanionManager: ObservableObject {
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
             clickyDebugLog("shortcut released")
-            ClickyAnalytics.trackPushToTalkReleased()
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -802,7 +780,6 @@ final class CompanionManager: ObservableObject {
                         guard let self,
                               self.currentResponseTaskIdentifier == responseTaskIdentifier else { return }
                         self.ttsSpeechErrorMessage = error.localizedDescription
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ Streaming TTS error: \(error)")
                     }
                 )
@@ -861,7 +838,6 @@ final class CompanionManager: ObservableObject {
                     detectedElementDisplayFrame = displayFrame
                     detectedElementScreenLocation = globalLocation
                     clickyDebugLog("point target screenLocation=\(globalLocation) displayFrame=\(displayFrame) normalized1000=\(pointCoordinate)")
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
@@ -874,7 +850,6 @@ final class CompanionManager: ObservableObject {
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
-                ClickyAnalytics.trackAIResponseReceived(response: displayText)
 
                 // Keep this response task alive until all synthesized sentence
                 // segments finish so a new push-to-talk can cancel the whole queue.
@@ -886,7 +861,6 @@ final class CompanionManager: ObservableObject {
                 elevenLabsTTSClient.stopPlayback()
             } catch {
                 elevenLabsTTSClient.stopPlayback()
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()
             }

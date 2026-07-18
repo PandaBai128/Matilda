@@ -1,9 +1,32 @@
-worker/node_modules/
-worker/.dev.vars
 .DS_Store
-*.xcuserstate
-xcuserdata/
+
+# Xcode user and build output
+DerivedData/
 build/
-releases/
+*.xcarchive
+*.dmg
+*.ipa
+*.dSYM
+*.dSYM.zip
+xcuserdata/
+*.xcuserstate
+
+# Node dependencies and local credentials
+worker/node_modules/
+worker/.wrangler/
+worker/.dev.vars
+worker/.env
+worker/.env.*
+!worker/.dev.vars.example
+
+# Local logs and generated audio
+*.log
+*.mp3
+*.wav
+*.m4a
+*.aac
+
+# Local agent notes
 .claude/
 coding-plans/
+releases/
