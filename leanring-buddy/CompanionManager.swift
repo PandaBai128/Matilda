@@ -75,6 +75,33 @@ enum CompanionResponseLength: String, CaseIterable {
     }
 }
 
+enum CompanionAvatarSize: String, CaseIterable {
+    case small
+    case medium
+    case large
+
+    var displayName: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    var diameter: CGFloat {
+        switch self {
+        case .small: return 20
+        case .medium: return 30
+        case .large: return 42
+        }
+    }
+
+    var cursorOffset: CGPoint {
+        let distance = diameter * 0.78
+        return CGPoint(x: distance, y: distance * 0.72)
+    }
+}
+
 struct CompanionConversationExchange: Identifiable, Equatable {
     let id: UUID
     let userTranscript: String
@@ -112,10 +139,6 @@ final class CompanionManager: ObservableObject {
     /// The display frame (global AppKit coords) of the screen the detected
     /// element is on, so BlueCursorView knows which screen overlay should animate.
     @Published var detectedElementDisplayFrame: CGRect?
-    /// Custom speech bubble text for the pointing animation. When set,
-    /// BlueCursorView uses this instead of a random pointer phrase.
-    @Published var detectedElementBubbleText: String?
-
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
@@ -182,6 +205,13 @@ final class CompanionManager: ObservableObject {
         }
         return storedResponseLength
     }()
+    @Published private(set) var companionAvatarSize: CompanionAvatarSize = {
+        guard let storedValue = UserDefaults.standard.string(forKey: "zhuangzhuangAvatarSize"),
+              let storedSize = CompanionAvatarSize(rawValue: storedValue) else {
+            return .medium
+        }
+        return storedSize
+    }()
 
     @Published var selectedTTSVoiceID: String = UserDefaults.standard.string(forKey: "selectedMiniMaxTTSVoiceID")
         ?? "Chinese (Mandarin)_Warm_Bestie"
@@ -215,6 +245,11 @@ final class CompanionManager: ObservableObject {
     func setResponseLength(_ responseLength: CompanionResponseLength) {
         self.responseLength = responseLength
         UserDefaults.standard.set(responseLength.rawValue, forKey: "clickyResponseLength")
+    }
+
+    func setCompanionAvatarSize(_ companionAvatarSize: CompanionAvatarSize) {
+        self.companionAvatarSize = companionAvatarSize
+        UserDefaults.standard.set(companionAvatarSize.rawValue, forKey: "zhuangzhuangAvatarSize")
     }
 
     func setSelectedTTSVoiceID(_ voiceID: String) {
@@ -336,7 +371,7 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.removeObject(forKey: "miniMaxTTSEmotion")
         refreshAllPermissions()
         clickyDebugLog("manager.start accessibility=\(hasAccessibilityPermission) screen=\(hasScreenRecordingPermission) mic=\(hasMicrophonePermission) screenContent=\(hasScreenContentPermission) all=\(allPermissionsGranted)")
-        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
+        print("🔑 Matilda start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
@@ -356,7 +391,6 @@ final class CompanionManager: ObservableObject {
     func clearDetectedElementLocation() {
         detectedElementScreenLocation = nil
         detectedElementDisplayFrame = nil
-        detectedElementBubbleText = nil
     }
 
     func stop() {
@@ -635,7 +669,7 @@ final class CompanionManager: ObservableObject {
 
     private var companionVoiceResponseSystemPrompt: String {
         """
-    you're clicky, a screen-aware voice companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your job is to understand the current screen, answer the user's question, explain what they are seeing, and visually guide them when a visible target is relevant. your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    you're 壮壮, a screen-aware voice companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your job is to understand the current screen, answer the user's question, explain what they are seeing, and visually guide them when a visible target is relevant. your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     language:
     - reply in the same language the user spoke.
@@ -685,7 +719,7 @@ final class CompanionManager: ObservableObject {
         \(transcript)
 
         internal clicky pointing requirement:
-        - inspect the current screenshot and end your entire response with exactly one machine-readable V2 tag: [POINT_V2:x,y:label] or [POINT_V2:none]. never use the legacy [POINT:...] format.
+        - this machine-readable suffix is mandatory. inspect the current screenshot and end your entire response with exactly one V2 tag: [POINT_V2:x,y:label] or [POINT_V2:none]. never omit it and never use the legacy [POINT:...] format.
         - x and y are normalized integers from 0 through 1000, independent of the screenshot's pixel dimensions. origin is top-left; x increases rightward and y increases downward.
         - calibration anchors: top-left is (0,0), exact center is (500,500), and bottom-right is (1000,1000).
         - first identify the target's visible bounding box, then visually verify and return its center. for a desktop file or folder, use the center of its icon, not its filename. for a button or menu item, use the center of the clickable control.
@@ -722,7 +756,10 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         stopAllSpeechAndCancelPreview()
 
-        let shouldRequestPointing = PointingRequestPolicy.shouldRequestPointing(for: transcript)
+        let shouldRequestPointing = PointingRequestPolicy.shouldRequestPointing(
+            for: transcript,
+            previousUserTranscript: conversationHistory.last?.userTranscript
+        )
         let shouldExtractScreenText = ScreenTextExtractionPolicy.isTextExtractionRequest(transcript)
         let responseTaskIdentifier = UUID()
         currentResponseTaskIdentifier = responseTaskIdentifier

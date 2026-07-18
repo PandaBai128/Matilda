@@ -8,7 +8,10 @@ import Foundation
 enum PointingRequestPolicy {
     /// Pointing follows natural questions about the visible screen while keeping
     /// knowledge, writing, and abstract troubleshooting questions cursor-free.
-    nonisolated static func shouldRequestPointing(for transcript: String) -> Bool {
+    nonisolated static func shouldRequestPointing(
+        for transcript: String,
+        previousUserTranscript: String? = nil
+    ) -> Bool {
         let normalizedTranscript = transcript
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -29,6 +32,8 @@ enum PointingRequestPolicy {
 
         let currentScreenReferencePhrases = [
             "这个页面", "当前页面", "这个界面", "当前界面",
+            "这是什么页面", "这是什么界面", "这是什么窗口",
+            "这是哪个页面", "这是哪个应用", "这是什么应用", "这是什么软件",
             "这个按钮", "这个图标", "这个菜单", "这个窗口",
             "屏幕上", "桌面上", "页面上", "这里",
             "this page", "current page", "this screen", "this button",
@@ -36,6 +41,40 @@ enum PointingRequestPolicy {
         ]
         if currentScreenReferencePhrases.contains(where: { normalizedTranscript.contains($0) }) {
             return true
+        }
+
+        let closeActionPhrases = [
+            "怎么关掉", "如何关掉", "怎样关掉",
+            "怎么关闭", "如何关闭", "怎样关闭",
+            "where do i close", "how do i close"
+        ]
+        let visibleCloseTargetWords = [
+            "页面", "界面", "窗口", "面板", "弹窗", "标签页", "应用", "软件",
+            "page", "screen", "window", "panel", "dialog", "tab", "app", "application"
+        ]
+        let asksHowToClose = closeActionPhrases.contains {
+            normalizedTranscript.contains($0)
+        }
+        let namesVisibleCloseTarget = visibleCloseTargetWords.contains {
+            normalizedTranscript.contains($0)
+        }
+        if asksHowToClose && namesVisibleCloseTarget {
+            return true
+        }
+
+        if asksHowToClose,
+           let previousUserTranscript {
+            let normalizedPreviousTranscript = previousUserTranscript
+                .lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let previousMessageEstablishedVisibleTarget = currentScreenReferencePhrases.contains {
+                normalizedPreviousTranscript.contains($0)
+            } || visibleCloseTargetWords.contains {
+                normalizedPreviousTranscript.contains($0)
+            }
+            if previousMessageEstablishedVisibleTarget {
+                return true
+            }
         }
 
         let visibleTargetWords = [

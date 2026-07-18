@@ -2,8 +2,8 @@
 //  OverlayWindow.swift
 //  leanring-buddy
 //
-//  System-wide transparent overlay window for blue glowing cursor.
-//  One OverlayWindow is created per screen so the cursor buddy
+//  System-wide transparent overlay window for the companion avatar.
+//  One OverlayWindow is created per screen so the companion
 //  seamlessly follows the cursor across multiple monitors.
 //
 
@@ -51,24 +51,6 @@ class OverlayWindow: NSWindow {
     }
 }
 
-// Cursor-like triangle shape (equilateral)
-struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let size = min(rect.width, rect.height)
-        let height = size * sqrt(3.0) / 2.0
-
-        // Top vertex
-        path.move(to: CGPoint(x: rect.midX, y: rect.midY - height / 1.5))
-        // Bottom left vertex
-        path.addLine(to: CGPoint(x: rect.midX - size / 2, y: rect.midY + height / 3))
-        // Bottom right vertex
-        path.addLine(to: CGPoint(x: rect.midX + size / 2, y: rect.midY + height / 3))
-        path.closeSubpath()
-        return path
-    }
-}
-
 struct NavigationBubbleSizePreferenceKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
@@ -78,7 +60,7 @@ struct NavigationBubbleSizePreferenceKey: PreferenceKey {
 
 /// The buddy's behavioral mode. Controls whether it follows the cursor,
 /// is flying toward a detected UI element, or is pointing at an element.
-enum BuddyNavigationMode {
+enum BuddyNavigationMode: Equatable {
     /// Default — buddy follows the mouse cursor with spring animation
     case followingCursor
     /// Buddy is animating toward a detected UI element location
@@ -87,11 +69,11 @@ enum BuddyNavigationMode {
     case pointingAtTarget
 }
 
-// SwiftUI view for the blue glowing cursor pointer.
+// SwiftUI view for the Zhuangzhuang cursor companion.
 // Each screen gets its own BlueCursorView. The view checks whether
 // the cursor is currently on THIS screen and only shows the buddy
-// triangle when it is. During voice interaction, the triangle is
-// replaced by a waveform (listening) or spinner (processing).
+// avatar when it is. Voice and navigation states animate the same approved
+// identity image so facial proportions never drift between generated frames.
 struct BlueCursorView: View {
     let screenFrame: CGRect
     @ObservedObject var companionManager: CompanionManager
@@ -108,7 +90,8 @@ struct BlueCursorView: View {
         let mouseLocation = NSEvent.mouseLocation
         let localX = mouseLocation.x - screenFrame.origin.x
         let localY = screenFrame.height - (mouseLocation.y - screenFrame.origin.y)
-        _cursorPosition = State(initialValue: CGPoint(x: localX + 35, y: localY + 25))
+        let cursorOffset = companionManager.companionAvatarSize.cursorOffset
+        _cursorPosition = State(initialValue: CGPoint(x: localX + cursorOffset.x, y: localY + cursorOffset.y))
         _isCursorOnThisScreen = State(initialValue: screenFrame.contains(mouseLocation))
     }
     @State private var timer: Timer?
@@ -119,9 +102,8 @@ struct BlueCursorView: View {
     /// The buddy's current behavioral mode (following cursor, navigating, or pointing).
     @State private var buddyNavigationMode: BuddyNavigationMode = .followingCursor
 
-    /// The rotation angle of the triangle in degrees. Default is -35° (cursor-like).
-    /// Changes to face the direction of travel when navigating to a target.
-    @State private var triangleRotationDegrees: Double = -35.0
+    /// A restrained head tilt that follows the direction of travel.
+    @State private var buddyTravelTiltDegrees: Double = 0
 
     /// Speech bubble text shown when pointing at a detected element.
     @State private var navigationBubbleText: String = ""
@@ -136,7 +118,7 @@ struct BlueCursorView: View {
     /// Invalidated when the flight completes, is canceled, or the view disappears.
     @State private var navigationAnimationTimer: Timer?
 
-    /// Scale factor applied to the buddy triangle during flight. Grows to ~1.3x
+    /// Scale factor applied to the buddy portrait during flight. Grows to ~1.3x
     /// at the midpoint of the arc and shrinks back to 1.0x on landing, creating
     /// an energetic "swooping" feel.
     @State private var buddyFlightScale: CGFloat = 1.0
@@ -144,26 +126,24 @@ struct BlueCursorView: View {
     /// Scale factor for the navigation speech bubble's pop-in entrance.
     /// Starts at 0.5 and springs to 1.0 when the first character appears.
     @State private var navigationBubbleScale: CGFloat = 1.0
+    @State private var pointingTargetPosition: CGPoint?
 
     /// True when the buddy is flying BACK to the cursor after pointing.
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
 
-    private let pointingTriangleTipCompensation = CGPoint(x: 5.3, y: 7.6)
-
-    private let navigationPointerPhrases = [
-        "right here!",
-        "this one!",
-        "over here!",
-        "click this!",
-        "here it is!",
-        "found it!"
-    ]
+    private let navigationPointerPhrase = "汪，汪汪"
 
     var body: some View {
         ZStack {
             // Nearly transparent background (helps with compositing)
             Color.black.opacity(0.001)
+
+            if buddyNavigationMode == .pointingAtTarget,
+               let pointingTargetPosition {
+                ZhuangzhuangTargetMarkerView()
+                    .position(pointingTargetPosition)
+            }
 
             // Navigation pointer bubble — shown when buddy arrives at a detected element.
             // Pops in with a scale-bounce (0.5x → 1.0x spring) and a bright initial
@@ -192,7 +172,10 @@ struct BlueCursorView: View {
                     )
                     .scaleEffect(navigationBubbleScale)
                     .opacity(navigationBubbleOpacity)
-                    .position(x: cursorPosition.x + 10 + (navigationBubbleSize.width / 2), y: cursorPosition.y + 18)
+                    .position(
+                        x: cursorPosition.x + 8 + (navigationBubbleSize.width / 2),
+                        y: cursorPosition.y + (companionManager.companionAvatarSize.diameter / 2) + 12
+                    )
                     .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                     .animation(.spring(response: 0.4, dampingFraction: 0.6), value: navigationBubbleScale)
                     .animation(.easeOut(duration: 0.5), value: navigationBubbleOpacity)
@@ -201,21 +184,18 @@ struct BlueCursorView: View {
                     }
             }
 
-            // Blue triangle cursor — shown when idle or while TTS is playing (responding).
-            // All three states (triangle, waveform, spinner) stay in the view tree
-            // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
-            // them (which caused a visible cursor "pop").
-            //
-            // During cursor following: fast spring animation for snappy tracking.
-            // During navigation: NO implicit animation — the frame-by-frame bezier
-            // timer controls position directly at 60fps for a smooth arc flight.
-            Triangle()
-                .fill(DS.Colors.overlayCursorBlue)
-                .frame(width: 16, height: 16)
-                .rotationEffect(.degrees(triangleRotationDegrees))
-                .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
+            // The same approved portrait remains mounted for every state. SwiftUI
+            // supplies smooth motion, listening feedback, and thinking indicators
+            // without asking image generation to redraw the dog's face per frame.
+            ZhuangzhuangAvatarView(
+                diameter: companionManager.companionAvatarSize.diameter,
+                voiceState: companionManager.voiceState,
+                navigationMode: buddyNavigationMode,
+                audioPowerLevel: companionManager.currentAudioPowerLevel,
+                travelTiltDegrees: buddyTravelTiltDegrees
+            )
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -224,24 +204,6 @@ struct BlueCursorView: View {
                     value: cursorPosition
                 )
                 .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
-                .animation(
-                    buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
-                    value: triangleRotationDegrees
-                )
-
-            // Blue waveform — replaces the triangle while listening
-            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
-
-            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
-            BlueCursorSpinnerView()
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
@@ -252,7 +214,11 @@ struct BlueCursorView: View {
             isCursorOnThisScreen = screenFrame.contains(mouseLocation)
 
             let swiftUIPosition = convertScreenPointToSwiftUICoordinates(mouseLocation)
-            self.cursorPosition = CGPoint(x: swiftUIPosition.x + 35, y: swiftUIPosition.y + 25)
+            let cursorOffset = companionManager.companionAvatarSize.cursorOffset
+            self.cursorPosition = CGPoint(
+                x: swiftUIPosition.x + cursorOffset.x,
+                y: swiftUIPosition.y + cursorOffset.y
+            )
 
             startTrackingCursor()
 
@@ -283,7 +249,7 @@ struct BlueCursorView: View {
         }
     }
 
-    /// Whether the buddy triangle should be visible on this screen.
+    /// Whether the buddy avatar should be visible on this screen.
     /// True when cursor is on this screen during normal following, or
     /// when navigating/pointing at a target on this screen. When another
     /// screen is navigating (detectedElementScreenLocation is set but this
@@ -333,8 +299,9 @@ struct BlueCursorView: View {
 
             // Normal cursor following
             let swiftUIPosition = self.convertScreenPointToSwiftUICoordinates(mouseLocation)
-            let buddyX = swiftUIPosition.x + 35
-            let buddyY = swiftUIPosition.y + 25
+            let cursorOffset = companionManager.companionAvatarSize.cursorOffset
+            let buddyX = swiftUIPosition.x + cursorOffset.x
+            let buddyY = swiftUIPosition.y + cursorOffset.y
             self.cursorPosition = CGPoint(x: buddyX, y: buddyY)
         }
     }
@@ -354,17 +321,22 @@ struct BlueCursorView: View {
         // Convert the AppKit screen location to SwiftUI coordinates for this screen
         let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
 
-        // The model identifies the target center. Offset the triangle's center
-        // so its rotated tip, rather than its bounding box center, lands there.
-        let offsetTarget = CGPoint(
-            x: targetInSwiftUI.x + pointingTriangleTipCompensation.x,
-            y: targetInSwiftUI.y + pointingTriangleTipCompensation.y
+        // Keep the exact model coordinate visible as a pulse marker, while the
+        // larger portrait stops beside it instead of covering the control.
+        let markerPosition = CGPoint(
+            x: max(10, min(targetInSwiftUI.x, screenFrame.width - 10)),
+            y: max(10, min(targetInSwiftUI.y, screenFrame.height - 10))
         )
+        pointingTargetPosition = markerPosition
 
-        // Clamp target to screen bounds with padding
+        let avatarDiameter = companionManager.companionAvatarSize.diameter
+        let avatarDestination = CGPoint(
+            x: markerPosition.x + max(18, avatarDiameter * 0.82),
+            y: markerPosition.y - max(16, avatarDiameter * 0.68)
+        )
         let clampedTarget = CGPoint(
-            x: max(20, min(offsetTarget.x, screenFrame.width - 20)),
-            y: max(20, min(offsetTarget.y, screenFrame.height - 20))
+            x: max(avatarDiameter / 2, min(avatarDestination.x, screenFrame.width - avatarDiameter / 2)),
+            y: max(avatarDiameter / 2, min(avatarDestination.y, screenFrame.height - avatarDiameter / 2))
         )
         clickyDebugLog("overlay navigate start screenLocation=\(screenLocation) target=\(targetInSwiftUI) clamped=\(clampedTarget) screen=\(screenFrame)")
 
@@ -384,8 +356,8 @@ struct BlueCursorView: View {
     }
 
     /// Animates the buddy along a quadratic bezier arc from its current position
-    /// to the specified destination. The triangle rotates to face its direction
-    /// of travel (tangent to the curve) each frame, scales up at the midpoint
+    /// to the specified destination. The portrait tilts toward its direction
+    /// of travel each frame, scales up at the midpoint
     /// for a "swooping" feel, and the glow intensifies during flight.
     private func animateBezierFlightArc(
         to destination: CGPoint,
@@ -445,15 +417,15 @@ struct BlueCursorView: View {
 
             self.cursorPosition = CGPoint(x: bezierX, y: bezierY)
 
-            // Rotation: face the direction of travel by computing the tangent
+            // Tilt toward the direction of travel without rotating the face
+            // upside down along steep arcs.
             // to the bezier curve. B'(t) = 2(1-t)(P1-P0) + 2t(P2-P1)
             let tangentX = 2.0 * oneMinusT * (controlPoint.x - startPosition.x)
                          + 2.0 * t * (endPosition.x - controlPoint.x)
             let tangentY = 2.0 * oneMinusT * (controlPoint.y - startPosition.y)
                          + 2.0 * t * (endPosition.y - controlPoint.y)
-            // +90° offset because the triangle's "tip" points up at 0° rotation,
-            // and atan2 returns 0° for rightward movement
-            self.triangleRotationDegrees = atan2(tangentY, tangentX) * (180.0 / .pi) + 90.0
+            let travelAngle = atan2(tangentY, tangentX) * (180.0 / .pi)
+            self.buddyTravelTiltDegrees = min(max(travelAngle * 0.12, -10), 10)
 
             // Scale pulse: sin curve peaks at midpoint of the flight.
             // Buddy grows to ~1.3x at the apex, then shrinks back to 1.0x on landing.
@@ -467,8 +439,7 @@ struct BlueCursorView: View {
     private func startPointingAtElement() {
         buddyNavigationMode = .pointingAtTarget
 
-        // Rotate back to default pointer angle now that we've arrived
-        triangleRotationDegrees = -35.0
+        buddyTravelTiltDegrees = -5
 
         // Reset navigation bubble state — start small for the scale-bounce entrance
         navigationBubbleText = ""
@@ -476,13 +447,7 @@ struct BlueCursorView: View {
         navigationBubbleSize = .zero
         navigationBubbleScale = 0.5
 
-        // Use custom bubble text from the companion manager when available.
-        // if available, otherwise fall back to a random pointer phrase
-        let pointerPhrase = companionManager.detectedElementBubbleText
-            ?? navigationPointerPhrases.randomElement()
-            ?? "right here!"
-
-        streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
+        streamNavigationBubbleCharacter(phrase: navigationPointerPhrase, characterIndex: 0) {
             // All characters streamed — hold for 3 seconds, then fly back
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                 guard self.buddyNavigationMode == .pointingAtTarget else { return }
@@ -530,7 +495,11 @@ struct BlueCursorView: View {
     private func startFlyingBackToCursor() {
         let mouseLocation = NSEvent.mouseLocation
         let cursorInSwiftUI = convertScreenPointToSwiftUICoordinates(mouseLocation)
-        let cursorWithTrackingOffset = CGPoint(x: cursorInSwiftUI.x + 35, y: cursorInSwiftUI.y + 25)
+        let cursorOffset = companionManager.companionAvatarSize.cursorOffset
+        let cursorWithTrackingOffset = CGPoint(
+            x: cursorInSwiftUI.x + cursorOffset.x,
+            y: cursorInSwiftUI.y + cursorOffset.y
+        )
 
         cursorPositionWhenNavigationStarted = cursorInSwiftUI
 
@@ -550,6 +519,7 @@ struct BlueCursorView: View {
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
         buddyFlightScale = 1.0
+        pointingTargetPosition = nil
         finishNavigationAndResumeFollowing()
     }
 
@@ -559,8 +529,9 @@ struct BlueCursorView: View {
         navigationAnimationTimer = nil
         buddyNavigationMode = .followingCursor
         isReturningToCursor = false
-        triangleRotationDegrees = -35.0
+        buddyTravelTiltDegrees = 0
         buddyFlightScale = 1.0
+        pointingTargetPosition = nil
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
@@ -569,10 +540,153 @@ struct BlueCursorView: View {
 
 }
 
-// MARK: - Blue Cursor Waveform
+// MARK: - Zhuangzhuang Avatar
 
-/// A small blue waveform that replaces the triangle cursor while
-/// the user is holding the push-to-talk shortcut and speaking.
+private struct ZhuangzhuangAvatarView: View {
+    let diameter: CGFloat
+    let voiceState: CompanionVoiceState
+    let navigationMode: BuddyNavigationMode
+    let audioPowerLevel: CGFloat
+    let travelTiltDegrees: Double
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timelineContext in
+            let animationTime = timelineContext.date.timeIntervalSinceReferenceDate
+            let portraitRotation = rotationDegrees(at: animationTime)
+            let portraitScale = scale(at: animationTime)
+            let shouldBlink = isBlinking(at: animationTime)
+
+            ZStack {
+                Circle()
+                    .fill(Color(red: 0.79, green: 0.79, blue: 0.79))
+
+                Image("ZhuangzhuangHead")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: diameter, height: diameter)
+                    .clipShape(Circle())
+
+                Circle()
+                    .stroke(DS.Colors.overlayCursorBlue.opacity(0.78), lineWidth: max(1, diameter * 0.045))
+
+                if shouldBlink {
+                    HStack(spacing: diameter * 0.07) {
+                        ForEach(0..<2, id: \.self) { _ in
+                            Capsule()
+                                .fill(Color(red: 0.42, green: 0.20, blue: 0.08))
+                                .frame(width: diameter * 0.16, height: max(1, diameter * 0.04))
+                        }
+                    }
+                    .offset(y: -diameter * 0.045)
+                }
+
+                if voiceState == .listening {
+                    BlueCursorWaveformView(audioPowerLevel: audioPowerLevel)
+                        .offset(x: diameter * 0.72, y: diameter * 0.08)
+                }
+
+                if voiceState == .processing {
+                    ZhuangzhuangThinkingDotsView(
+                        diameter: diameter,
+                        animationTime: animationTime
+                    )
+                }
+            }
+            .frame(width: diameter, height: diameter)
+            .rotationEffect(.degrees(portraitRotation))
+            .scaleEffect(portraitScale)
+            .shadow(
+                color: DS.Colors.overlayCursorBlue.opacity(navigationMode == .navigatingToTarget ? 0.72 : 0.42),
+                radius: navigationMode == .navigatingToTarget ? diameter * 0.34 : diameter * 0.20,
+                x: 0,
+                y: 0
+            )
+        }
+    }
+
+    private func rotationDegrees(at animationTime: TimeInterval) -> Double {
+        switch navigationMode {
+        case .navigatingToTarget:
+            return travelTiltDegrees
+        case .pointingAtTarget:
+            return -5 + sin(animationTime * 2.8) * 1.2
+        case .followingCursor:
+            break
+        }
+
+        switch voiceState {
+        case .idle:
+            return sin(animationTime * 1.2) * 1.2
+        case .listening:
+            return -7 + sin(animationTime * 2.2) * 1.4
+        case .processing:
+            return 4 + sin(animationTime * 1.9) * 2.0
+        case .responding:
+            return sin(animationTime * 1.8) * 0.9
+        }
+    }
+
+    private func scale(at animationTime: TimeInterval) -> CGFloat {
+        if voiceState == .listening {
+            let normalizedAudioPower = min(max(audioPowerLevel * 1.7, 0), 1)
+            return 1 + normalizedAudioPower * 0.045
+        }
+        return 1 + CGFloat(sin(animationTime * 1.7)) * 0.012
+    }
+
+    private func isBlinking(at animationTime: TimeInterval) -> Bool {
+        guard navigationMode == .followingCursor,
+              voiceState == .idle || voiceState == .responding else {
+            return false
+        }
+        return animationTime.truncatingRemainder(dividingBy: 5.8) < 0.14
+    }
+}
+
+private struct ZhuangzhuangThinkingDotsView: View {
+    let diameter: CGFloat
+    let animationTime: TimeInterval
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: max(1, diameter * 0.045)) {
+            ForEach(0..<3, id: \.self) { dotIndex in
+                let wave = CGFloat((sin(animationTime * 4.2 + Double(dotIndex) * 0.9) + 1) / 2)
+                Circle()
+                    .fill(DS.Colors.overlayCursorBlue)
+                    .frame(
+                        width: diameter * (0.10 + wave * 0.025),
+                        height: diameter * (0.10 + wave * 0.025)
+                    )
+                    .offset(y: -CGFloat(wave) * diameter * 0.10)
+            }
+        }
+        .offset(x: diameter * 0.48, y: -diameter * 0.53)
+        .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.65), radius: diameter * 0.12)
+    }
+}
+
+private struct ZhuangzhuangTargetMarkerView: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { timelineContext in
+            let phase = CGFloat((sin(timelineContext.date.timeIntervalSinceReferenceDate * 4.0) + 1) / 2)
+            ZStack {
+                Circle()
+                    .stroke(DS.Colors.overlayCursorBlue.opacity(Double(0.78 - phase * 0.38)), lineWidth: 1.5)
+                    .frame(width: 15, height: 15)
+                    .scaleEffect(0.72 + phase * 0.48)
+
+                Circle()
+                    .fill(DS.Colors.overlayCursorBlue)
+                    .frame(width: 4, height: 4)
+            }
+            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.72), radius: 5)
+        }
+    }
+}
+
+// MARK: - Listening Waveform
+
+/// A small waveform that reacts beside Zhuangzhuang while the user speaks.
 private struct BlueCursorWaveformView: View {
     let audioPowerLevel: CGFloat
 
@@ -606,37 +720,6 @@ private struct BlueCursorWaveformView: View {
         let reactiveHeight = easedAudioPowerLevel * 10 * listeningBarProfile[barIndex]
         let idlePulse = (sin(animationPhase) + 1) / 2 * 1.5
         return 3 + reactiveHeight + idlePulse
-    }
-}
-
-// MARK: - Blue Cursor Spinner
-
-/// A small blue spinning indicator that replaces the triangle cursor
-/// while the AI is processing a voice input.
-private struct BlueCursorSpinnerView: View {
-    @State private var isSpinning = false
-
-    var body: some View {
-        Circle()
-            .trim(from: 0.15, to: 0.85)
-            .stroke(
-                AngularGradient(
-                    colors: [
-                        DS.Colors.overlayCursorBlue.opacity(0.0),
-                        DS.Colors.overlayCursorBlue
-                    ],
-                    center: .center
-                ),
-                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-            )
-            .frame(width: 14, height: 14)
-            .rotationEffect(.degrees(isSpinning ? 360 : 0))
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
-            .onAppear {
-                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
-                    isSpinning = true
-                }
-            }
     }
 }
 

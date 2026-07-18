@@ -38,6 +38,9 @@ struct CompanionPanelView: View {
                 voiceSettingsSection
                     .padding(.horizontal, 16)
 
+                companionAppearanceSection
+                    .padding(.horizontal, 16)
+
                 Spacer()
                     .frame(height: 10)
 
@@ -84,13 +87,23 @@ struct CompanionPanelView: View {
     private var panelHeader: some View {
         HStack {
             HStack(spacing: 8) {
-                // Animated status dot
-                Circle()
-                    .fill(statusDotColor)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: statusDotColor.opacity(0.6), radius: 4)
+                Image("ZhuangzhuangHead")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 22, height: 22)
+                    .clipShape(Circle())
+                    .overlay(
+                        Circle()
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.75)
+                    )
+                    .overlay(alignment: .bottomTrailing) {
+                        Circle()
+                            .fill(statusDotColor)
+                            .frame(width: 6, height: 6)
+                            .shadow(color: statusDotColor.opacity(0.7), radius: 3)
+                    }
 
-                Text("Clicky")
+                Text("壮壮")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
             }
@@ -135,7 +148,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Grant all four permissions below to use Clicky.")
+                Text("Grant all four permissions below to use 壮壮.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -449,31 +462,58 @@ struct CompanionPanelView: View {
 
 
 
-    // MARK: - Show Clicky Cursor Toggle
+    // MARK: - Companion Appearance
 
-    private var showClickyCursorToggleRow: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "cursorarrow")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(width: 16)
+    private var companionAppearanceSection: some View {
+        VStack(spacing: 8) {
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "pawprint.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 16)
 
-                Text("Show Clicky")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
+                    Text("Show 壮壮")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { companionManager.isClickyCursorEnabled },
+                    set: { companionManager.setClickyCursorEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8)
+                .pointerCursor()
             }
 
-            Spacer()
+            HStack {
+                Text("Size")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
 
-            Toggle("", isOn: Binding(
-                get: { companionManager.isClickyCursorEnabled },
-                set: { companionManager.setClickyCursorEnabled($0) }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .tint(DS.Colors.accent)
-            .scaleEffect(0.8)
+                Spacer()
+
+                Picker("Size", selection: Binding(
+                    get: { companionManager.companionAvatarSize },
+                    set: { companionManager.setCompanionAvatarSize($0) }
+                )) {
+                    ForEach(CompanionAvatarSize.allCases, id: \.self) { companionAvatarSize in
+                        Text(companionAvatarSize.displayName)
+                            .tag(companionAvatarSize)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 158)
+                .disabled(!companionManager.isClickyCursorEnabled)
+                .opacity(companionManager.isClickyCursorEnabled ? 1 : 0.45)
+                .pointerCursor()
+            }
         }
         .padding(.vertical, 4)
     }
@@ -713,7 +753,7 @@ struct CompanionPanelView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "power")
                         .font(.system(size: 11, weight: .medium))
-                    Text("Quit Clicky")
+                    Text("Quit 壮壮")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundColor(DS.Colors.textTertiary)
@@ -814,7 +854,7 @@ private struct ConversationExchangeCard: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("Clicky")
+                    Text("壮壮")
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundColor(DS.Colors.info)
 

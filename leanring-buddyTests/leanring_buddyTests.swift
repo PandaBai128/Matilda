@@ -7,7 +7,7 @@
 
 import Testing
 import CoreGraphics
-@testable import Clicky
+@testable import Matilda
 
 @MainActor
 struct leanring_buddyTests {
@@ -150,6 +150,25 @@ struct leanring_buddyTests {
     @Test func currentPageIdentificationRequestsPointing() async throws {
         #expect(PointingRequestPolicy.shouldRequestPointing(
             for: "这个页面是什么？"
+        ))
+        #expect(PointingRequestPolicy.shouldRequestPointing(
+            for: "这是什么页面？"
+        ))
+        #expect(PointingRequestPolicy.shouldRequestPointing(
+            for: "那这是什么页面？"
+        ))
+    }
+
+    @Test func visiblePageCloseGuidanceRequestsPointing() async throws {
+        #expect(PointingRequestPolicy.shouldRequestPointing(
+            for: "怎么关掉这个页面？"
+        ))
+        #expect(PointingRequestPolicy.shouldRequestPointing(
+            for: "告诉我如何关掉",
+            previousUserTranscript: "这是什么页面？"
+        ))
+        #expect(!PointingRequestPolicy.shouldRequestPointing(
+            for: "如何关闭这个话题？"
         ))
     }
 

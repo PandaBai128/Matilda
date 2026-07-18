@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Clicky
+@testable import Matilda
 
 @MainActor
 @Suite(.serialized)
