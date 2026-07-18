@@ -122,9 +122,10 @@ async function handleTTS(request, response) {
       output_format: "hex",
       voice_setting: {
         voice_id: incomingBody.voice_id?.trim() || env.MINIMAX_TTS_VOICE_ID || "Chinese (Mandarin)_Warm_Bestie",
-        speed: 1,
+        speed: parseMiniMaxTTSSpeed(incomingBody.speed),
         vol: parseMiniMaxTTSVolume(incomingBody.volume ?? env.MINIMAX_TTS_VOLUME),
-        pitch: 0,
+        pitch: parseMiniMaxTTSPitch(incomingBody.pitch),
+        ...(incomingBody.emotion ? { emotion: incomingBody.emotion } : {}),
       },
       audio_setting: {
         sample_rate: 32000,
@@ -274,6 +275,16 @@ function parseMiniMaxTTSVolume(rawVolume) {
   }
 
   return Math.max(0.1, Math.min(parsedVolume, 10));
+}
+
+function parseMiniMaxTTSSpeed(rawSpeed) {
+  const parsedSpeed = Number(rawSpeed ?? 1);
+  return Number.isFinite(parsedSpeed) ? Math.max(0.5, Math.min(parsedSpeed, 2)) : 1;
+}
+
+function parseMiniMaxTTSPitch(rawPitch) {
+  const parsedPitch = Number(rawPitch ?? 0);
+  return Number.isFinite(parsedPitch) ? Math.round(Math.max(-12, Math.min(parsedPitch, 12))) : 0;
 }
 
 async function readJSON(request) {

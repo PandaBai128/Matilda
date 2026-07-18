@@ -542,110 +542,39 @@ struct CompanionPanelView: View {
     }
 
     private var voiceSettingsSection: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Voice")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Spacer()
-
-                TextField("MiniMax voice ID", text: Binding(
-                    get: { companionManager.selectedTTSVoiceID },
-                    set: { companionManager.setSelectedTTSVoiceID($0) }
-                ))
-                .textFieldStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(DS.Colors.textPrimary)
-                .padding(.horizontal, 8)
-                .frame(width: 142, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                )
-
-                Menu {
-                    if companionManager.availableTTSVoices.isEmpty {
-                        Text(companionManager.isLoadingTTSVoices ? "Loading voices..." : "No voices loaded")
-                    } else {
-                        ForEach(["System", "Cloned", "Generated"], id: \.self) { category in
-                            let voices = companionManager.availableTTSVoices.filter { $0.category == category }
-                            if !voices.isEmpty {
-                                Section(category) {
-                                    ForEach(voices) { voice in
-                                        Button(voice.displayName) {
-                                            companionManager.setSelectedTTSVoiceID(voice.voiceID)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Divider()
-                    Button("Reload voice library") {
-                        companionManager.loadAvailableTTSVoices()
-                    }
-                } label: {
-                    Image(systemName: companionManager.isLoadingTTSVoices ? "arrow.triangle.2.circlepath" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(DS.Colors.textSecondary)
-                        .frame(width: 28, height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.white.opacity(0.06))
-                        )
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .pointerCursor()
-                .help("Choose a MiniMax voice")
-            }
-
-            HStack(spacing: 8) {
-                Text("Volume")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Slider(value: Binding(
-                    get: { companionManager.ttsVolume },
-                    set: { companionManager.setTTSVolume($0) }
-                ), in: 0.1...10, step: 0.1)
-                .tint(DS.Colors.accent)
-
-                Text(companionManager.ttsVolume.formatted(.number.precision(.fractionLength(1))))
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundColor(DS.Colors.textTertiary)
-                    .frame(width: 25, alignment: .trailing)
 
-                Button(action: {
-                    companionManager.previewSelectedTTSVoice()
-                }) {
-                    Image(systemName: "speaker.wave.2.fill")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.textSecondary)
-                        .frame(width: 28, height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.white.opacity(0.06))
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .help("Preview voice")
+                Text(companionManager.selectedTTSVoiceDisplayName)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .lineLimit(1)
             }
 
-            if let errorMessage = companionManager.ttsVoiceCatalogErrorMessage {
-                Text(errorMessage)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(DS.Colors.warning)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+            Spacer()
+
+            Button(action: {
+                NotificationCenter.default.post(name: .clickyShowVoiceSettings, object: nil)
+            }) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .frame(width: 30, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
             }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .help("Voice settings")
         }
         .padding(.top, 6)
     }
@@ -745,6 +674,20 @@ struct CompanionPanelView: View {
             .pointerCursor()
 
             Spacer()
+
+            Button(action: {
+                NotificationCenter.default.post(name: .clickyShowVoiceSettings, object: nil)
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("Voice Settings")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(DS.Colors.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
         }
     }
 

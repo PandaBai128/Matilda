@@ -13,6 +13,7 @@ struct MiniMaxVoiceOption: Identifiable, Equatable {
     let voiceID: String
     let displayName: String
     let category: String
+    let description: String
 
     var id: String { voiceID }
 }
@@ -34,10 +35,12 @@ final class ElevenLabsTTSClient {
     private struct VoiceRecord: Decodable {
         let voiceID: String
         let voiceName: String?
+        let description: [String]?
 
         enum CodingKeys: String, CodingKey {
             case voiceID = "voice_id"
             case voiceName = "voice_name"
+            case description
         }
     }
 
@@ -62,17 +65,29 @@ final class ElevenLabsTTSClient {
 
     /// Sends `text` to the Worker TTS endpoint and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
-    func speakText(_ text: String, voiceID: String, volume: Double) async throws {
+    func speakText(
+        _ text: String,
+        voiceID: String,
+        volume: Double,
+        speed: Double,
+        pitch: Int,
+        emotion: String
+    ) async throws {
         var request = URLRequest(url: ttsProxyURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "text": text,
             "voice_id": voiceID,
-            "volume": min(max(volume, 0.1), 10)
+            "volume": min(max(volume, 0.1), 10),
+            "speed": min(max(speed, 0.5), 2),
+            "pitch": min(max(pitch, -12), 12)
         ]
+        if emotion != "automatic" {
+            body["emotion"] = emotion
+        }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -131,7 +146,8 @@ final class ElevenLabsTTSClient {
             return MiniMaxVoiceOption(
                 voiceID: voiceID,
                 displayName: displayName,
-                category: category
+                category: category,
+                description: (record.description ?? []).joined(separator: " ")
             )
         }
     }

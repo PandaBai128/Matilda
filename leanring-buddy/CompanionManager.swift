@@ -158,6 +158,16 @@ final class CompanionManager: ObservableObject {
         guard UserDefaults.standard.object(forKey: "miniMaxTTSVolume") != nil else { return 2.5 }
         return min(max(UserDefaults.standard.double(forKey: "miniMaxTTSVolume"), 0.1), 10)
     }()
+    @Published var ttsSpeed: Double = {
+        guard UserDefaults.standard.object(forKey: "miniMaxTTSSpeed") != nil else { return 1 }
+        return min(max(UserDefaults.standard.double(forKey: "miniMaxTTSSpeed"), 0.5), 2)
+    }()
+    @Published var ttsPitch: Int = {
+        guard UserDefaults.standard.object(forKey: "miniMaxTTSPitch") != nil else { return 0 }
+        return min(max(UserDefaults.standard.integer(forKey: "miniMaxTTSPitch"), -12), 12)
+    }()
+    @Published var ttsEmotion: String = UserDefaults.standard.string(forKey: "miniMaxTTSEmotion")
+        ?? "automatic"
     @Published private(set) var availableTTSVoices: [MiniMaxVoiceOption] = []
     @Published private(set) var isLoadingTTSVoices = false
     @Published private(set) var ttsVoiceCatalogErrorMessage: String?
@@ -179,6 +189,28 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(normalizedVolume, forKey: "miniMaxTTSVolume")
     }
 
+    func setTTSSpeed(_ speed: Double) {
+        let normalizedSpeed = min(max(speed, 0.5), 2)
+        ttsSpeed = normalizedSpeed
+        UserDefaults.standard.set(normalizedSpeed, forKey: "miniMaxTTSSpeed")
+    }
+
+    func setTTSPitch(_ pitch: Int) {
+        let normalizedPitch = min(max(pitch, -12), 12)
+        ttsPitch = normalizedPitch
+        UserDefaults.standard.set(normalizedPitch, forKey: "miniMaxTTSPitch")
+    }
+
+    func setTTSEmotion(_ emotion: String) {
+        ttsEmotion = emotion
+        UserDefaults.standard.set(emotion, forKey: "miniMaxTTSEmotion")
+    }
+
+    var selectedTTSVoiceDisplayName: String {
+        availableTTSVoices.first(where: { $0.voiceID == selectedTTSVoiceID })?.displayName
+            ?? selectedTTSVoiceID
+    }
+
     func loadAvailableTTSVoices() {
         guard !isLoadingTTSVoices else { return }
         isLoadingTTSVoices = true
@@ -195,14 +227,17 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    func previewSelectedTTSVoice() {
+    func previewTTSVoice(voiceID: String? = nil, text: String) {
         elevenLabsTTSClient.stopPlayback()
         Task {
             do {
                 try await elevenLabsTTSClient.speakText(
-                    "你好，我是 Clicky。",
-                    voiceID: selectedTTSVoiceID,
-                    volume: ttsVolume
+                    text,
+                    voiceID: voiceID ?? selectedTTSVoiceID,
+                    volume: ttsVolume,
+                    speed: ttsSpeed,
+                    pitch: ttsPitch,
+                    emotion: ttsEmotion
                 )
             } catch {
                 print("⚠️ MiniMax voice preview error: \(error)")
@@ -752,7 +787,10 @@ final class CompanionManager: ObservableObject {
                         try await elevenLabsTTSClient.speakText(
                             spokenText,
                             voiceID: selectedTTSVoiceID,
-                            volume: ttsVolume
+                            volume: ttsVolume,
+                            speed: ttsSpeed,
+                            pitch: ttsPitch,
+                            emotion: ttsEmotion
                         )
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding

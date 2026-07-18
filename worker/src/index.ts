@@ -112,7 +112,14 @@ function applyMiniMaxChatDefaults(body: Record<string, unknown>, env: Env): void
 }
 
 async function handleTTS(request: Request, env: Env, minimaxTTSURL: string): Promise<Response> {
-  const incomingBody = await request.json<{ text?: string; voice_id?: string; volume?: number }>();
+  const incomingBody = await request.json<{
+    text?: string;
+    voice_id?: string;
+    volume?: number;
+    speed?: number;
+    pitch?: number;
+    emotion?: string;
+  }>();
   const text = incomingBody.text?.trim();
   const requestedVoiceId = incomingBody.voice_id?.trim();
 
@@ -134,9 +141,10 @@ async function handleTTS(request: Request, env: Env, minimaxTTSURL: string): Pro
       output_format: "hex",
       voice_setting: {
         voice_id: requestedVoiceId || env.MINIMAX_TTS_VOICE_ID || "Chinese (Mandarin)_Warm_Bestie",
-        speed: 1,
+        speed: parseMiniMaxTTSSpeed(incomingBody.speed),
         vol: parseMiniMaxTTSVolume(incomingBody.volume ?? env.MINIMAX_TTS_VOLUME),
-        pitch: 0,
+        pitch: parseMiniMaxTTSPitch(incomingBody.pitch),
+        ...(incomingBody.emotion ? { emotion: incomingBody.emotion } : {}),
       },
       audio_setting: {
         sample_rate: 32000,
@@ -262,6 +270,22 @@ function parseMiniMaxTTSVolume(rawVolume: string | number | undefined): number {
   }
 
   return Math.max(0.1, Math.min(parsedVolume, 10));
+}
+
+function parseMiniMaxTTSSpeed(rawSpeed: number | undefined): number {
+  const parsedSpeed = Number(rawSpeed ?? 1);
+  if (!Number.isFinite(parsedSpeed)) {
+    return 1;
+  }
+  return Math.max(0.5, Math.min(parsedSpeed, 2));
+}
+
+function parseMiniMaxTTSPitch(rawPitch: number | undefined): number {
+  const parsedPitch = Number(rawPitch ?? 0);
+  if (!Number.isFinite(parsedPitch)) {
+    return 0;
+  }
+  return Math.round(Math.max(-12, Math.min(parsedPitch, 12)));
 }
 
 function makeSortedQueryString(params: Record<string, string>): string {
