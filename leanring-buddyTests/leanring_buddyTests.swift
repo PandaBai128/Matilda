@@ -135,9 +135,21 @@ struct leanring_buddyTests {
         ))
     }
 
-    @Test func ordinaryQuestionAboutVisibleUIControlsDoesNotRequestPointing() async throws {
-        #expect(!PointingRequestPolicy.shouldRequestPointing(
+    @Test func questionAboutVisibleUIControlRequestsPointing() async throws {
+        #expect(PointingRequestPolicy.shouldRequestPointing(
             for: "这个按钮为什么不能用？"
+        ))
+    }
+
+    @Test func naturalLocationQuestionRequestsPointingWithoutKnownTargetType() async throws {
+        #expect(PointingRequestPolicy.shouldRequestPointing(
+            for: "小狗狗在哪里？"
+        ))
+    }
+
+    @Test func currentPageIdentificationRequestsPointing() async throws {
+        #expect(PointingRequestPolicy.shouldRequestPointing(
+            for: "这个页面是什么？"
         ))
     }
 
@@ -163,6 +175,27 @@ struct leanring_buddyTests {
         #expect(PointingRequestPolicy.shouldRequestPointing(
             for: "Chrome 浏览器在哪儿？"
         ))
+    }
+
+    @Test func streamingSpeechEmitsCompletedSentenceBeforeResponseFinishes() async throws {
+        var segmenter = StreamingSpeechSegmenter()
+
+        let firstSegments = segmenter.consume(accumulatedText: "这是 Codex。后面还")
+        let finalSegments = segmenter.finish(finalAccumulatedText: "这是 Codex。后面还在生成。")
+
+        #expect(firstSegments == ["这是 Codex。"])
+        #expect(finalSegments == ["后面还在生成。"])
+    }
+
+    @Test func streamingSpeechNeverReadsCodeOrPointingTag() async throws {
+        var segmenter = StreamingSpeechSegmenter()
+        let response = "已经整理好了。```swift\nprint(\"hello\")\n```[POINT_V2:500,500:编辑器]"
+
+        let firstSegments = segmenter.consume(accumulatedText: response)
+        let finalSegments = segmenter.finish(finalAccumulatedText: response)
+
+        #expect(firstSegments == ["已经整理好了。"])
+        #expect(finalSegments == ["内容已经写好，可以在面板里复制。"])
     }
 
 }

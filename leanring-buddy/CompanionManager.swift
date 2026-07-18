@@ -502,6 +502,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
         currentResponseTaskIdentifier = UUID()
         elevenLabsTTSClient.stopPlayback()
+        voiceState = .idle
         clearDetectedElementLocation()
 
         ClickyAnalytics.trackPushToTalkStarted()
@@ -548,6 +549,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask = nil
             currentResponseTaskIdentifier = UUID()
             elevenLabsTTSClient.stopPlayback()
+            voiceState = .idle
             clearDetectedElementLocation()
 
             ClickyAnalytics.trackPushToTalkStarted()
@@ -586,7 +588,7 @@ final class CompanionManager: ObservableObject {
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
-    you're clicky, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    you're clicky, a screen-aware voice companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your job is to understand the current screen, answer the user's question, explain what they are seeing, and visually guide them when a visible target is relevant. your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     language:
     - reply in the same language the user spoke.
@@ -596,18 +598,18 @@ final class CompanionManager: ObservableObject {
     - never read a [POINT_V2:...] or legacy [POINT:...] tag aloud. keep it only as a machine-readable suffix.
 
     rules:
-    - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
+    - default to one or two sentences. be direct and dense. if the user explicitly asks for more detail, explain enough to resolve the current question while staying focused on the current screen or topic.
     - if replying in english, use lowercase, casual, warm language. no emojis.
     - write for the ear, not the eye. short sentences. for normal answers, no lists, bullet points, markdown, or formatting — just natural speech.
-    - if the user asks for code, commands, config, prompts, or other copyable text, include the copyable content in fenced markdown code blocks. keep the spoken explanation short; the app will show the code in the menu panel and will not read code blocks aloud.
+    - do not proactively offer scripts, commands, automation, code, or ways to control the computer. those are outside your role.
+    - if the user explicitly asks for a short piece of copyable text, include only that content in a fenced markdown block and keep the spoken explanation short. do not turn a normal question into a coding task.
+    - you cannot click, type, press keys, run commands, create or save files, execute scripts, or operate apps. never claim that you did or can do any of those things. you can only explain and point to a visible location.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
-    - you can help with anything — coding, writing, general knowledge, brainstorming.
     - never say "simply" or "just".
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
-    - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
+    - answer the current request completely, then stop. do not end by offering additional work, asking whether the user wants code, or suggesting unrelated next steps.
     - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
 
     element pointing:
@@ -636,6 +638,7 @@ final class CompanionManager: ObservableObject {
         - x and y are normalized integers from 0 through 1000, independent of the screenshot's pixel dimensions. origin is top-left; x increases rightward and y increases downward.
         - calibration anchors: top-left is (0,0), exact center is (500,500), and bottom-right is (1000,1000).
         - first identify the target's visible bounding box, then visually verify and return its center. for a desktop file or folder, use the center of its icon, not its filename. for a button or menu item, use the center of the clickable control.
+        - for a question asking what the current page or app is, point to the clearest visible identity anchor, such as the app icon, app name, page title, or product logo that supports your answer.
         - use a short 1-3 word label: [POINT_V2:x,y:label]. if the target is on a labeled secondary screen, append its screen number: [POINT_V2:x,y:label:screenN].
         - do not reuse coordinates from earlier messages and do not infer them from a typical layout. inspect the current screenshot every time.
         - if the exact requested target is not visible or you are uncertain which target matches, use [POINT_V2:none]. do not guess an approximate area.
@@ -703,6 +706,26 @@ final class CompanionManager: ObservableObject {
                     )
                 }
 
+                let streamingSpeechSession = StreamingSpeechResponseSession(
+                    ttsClient: elevenLabsTTSClient,
+                    voiceID: selectedTTSVoiceID,
+                    volume: ttsVolume,
+                    speed: ttsSpeed,
+                    pitch: ttsPitch,
+                    emotion: ttsEmotion
+                )
+                streamingSpeechSession.begin(
+                    onPlaybackStarted: { [weak self] in
+                        guard let self,
+                              self.currentResponseTaskIdentifier == responseTaskIdentifier else { return }
+                        self.voiceState = .responding
+                    },
+                    onFailure: { error in
+                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                        print("⚠️ Streaming TTS error: \(error)")
+                    }
+                )
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
@@ -712,8 +735,10 @@ final class CompanionManager: ObservableObject {
                         shouldRequestPointing: shouldRequestPointing
                     ),
                     temperature: shouldRequestPointing ? 0.1 : nil,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                    onTextChunk: { accumulatedText in
+                        guard self.currentResponseTaskIdentifier == responseTaskIdentifier,
+                              !Task.isCancelled else { return }
+                        streamingSpeechSession.consume(accumulatedText: accumulatedText)
                     }
                 )
 
@@ -724,19 +749,9 @@ final class CompanionManager: ObservableObject {
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
                 let pointCoordinate = shouldRequestPointing ? parseResult.coordinate : nil
                 let displayText = parseResult.spokenText
-                let spokenText = Self.textForSpeech(from: displayText)
+                streamingSpeechSession.finish(finalAccumulatedText: fullResponseText)
                 clickyDebugLog("llm full-response \(clickyDebugSnippet(fullResponseText))")
-                clickyDebugLog("tts spoken-text \(clickyDebugSnippet(spokenText))")
                 clickyDebugLog("point requested=\(shouldRequestPointing) coordinate=\(String(describing: pointCoordinate)) label=\(parseResult.elementLabel ?? "nil")")
-
-                // Handle element pointing if MiniMax returned coordinates for an
-                // explicitly requested target.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                if pointCoordinate != nil {
-                    voiceState = .idle
-                }
 
                 // Pick the screen capture matching MiniMax's screen number,
                 // falling back to the cursor screen if not specified.
@@ -780,29 +795,16 @@ final class CompanionManager: ObservableObject {
 
                 ClickyAnalytics.trackAIResponseReceived(response: displayText)
 
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(
-                            spokenText,
-                            voiceID: selectedTTSVoiceID,
-                            volume: ttsVolume,
-                            speed: ttsSpeed,
-                            pitch: ttsPitch,
-                            emotion: ttsEmotion
-                        )
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ TTS error: \(error)")
-                        speakCreditsErrorFallback()
-                    }
+                // Keep this response task alive until all synthesized sentence
+                // segments finish so a new push-to-talk can cancel the whole queue.
+                while elevenLabsTTSClient.isPlaying {
+                    try await Task.sleep(nanoseconds: 100_000_000)
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted
+                elevenLabsTTSClient.stopPlayback()
             } catch {
+                elevenLabsTTSClient.stopPlayback()
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakCreditsErrorFallback()
@@ -978,39 +980,6 @@ final class CompanionManager: ObservableObject {
             x: displayFrame.origin.x + displayLocalX,
             y: displayFrame.origin.y + displayFrame.height - displayLocalYFromTop
         )
-    }
-
-    nonisolated private static func textForSpeech(from displayText: String) -> String {
-        let codeBlockPattern = #"```[\s\S]*?```"#
-        guard let codeBlockRegex = try? NSRegularExpression(pattern: codeBlockPattern),
-              codeBlockRegex.firstMatch(
-                in: displayText,
-                range: NSRange(displayText.startIndex..., in: displayText)
-              ) != nil else {
-            return displayText.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        let displayTextRange = NSRange(displayText.startIndex..., in: displayText)
-        var speechText = codeBlockRegex.stringByReplacingMatches(
-            in: displayText,
-            range: displayTextRange,
-            withTemplate: "\n"
-        )
-
-        speechText = speechText
-            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let copyPrompt = "代码已经写好，可以在面板里复制。"
-        if speechText.isEmpty {
-            return copyPrompt
-        }
-
-        if speechText.contains("复制") {
-            return speechText
-        }
-
-        return "\(speechText) \(copyPrompt)"
     }
 
     nonisolated private static func textForConversationContext(from displayText: String) -> String {

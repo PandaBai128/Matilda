@@ -16,7 +16,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
 - **AI Chat**: MiniMax-M3 via Cloudflare Worker proxy with Anthropic-compatible SSE streaming
 - **Speech-to-Text**: Tencent Cloud ASR real-time streaming via signed websocket URL, with AssemblyAI, OpenAI, and Apple Speech still available as fallback implementations
-- **Text-to-Speech**: MiniMax T2A via Cloudflare Worker proxy
+- **Text-to-Speech**: MiniMax T2A via Cloudflare Worker proxy. LLM text is segmented at sentence boundaries as it streams, synthesized in order, and played from a cancellable audio queue so speech can begin before the full response completes.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: The vision model embeds normalized `[POINT_V2:x,y:label:screenN]` tags using a fixed 0–1000 coordinate space. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target. Legacy `[POINT:...]` tags are stripped but never move the cursor.
@@ -54,8 +54,8 @@ Worker vars: `MINIMAX_TTS_MODEL`, `MINIMAX_TTS_VOICE_ID`, `MINIMAX_TTS_VOLUME`, 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1025 | Central state machine. Owns dictation, shortcut monitoring, screen capture, vision API, TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, persisted TTS settings, and cursor visibility. Coordinates the full push-to-talk → screenshot → MiniMax → TTS → optional pointing pipeline. |
-| `PointingRequestPolicy.swift` | ~46 | Conservative transcript-only gate that allows cursor movement only for explicit pointing or on-screen location requests. |
+| `CompanionManager.swift` | ~995 | Central state machine. Owns dictation, shortcut monitoring, screen capture, vision API, streaming TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, persisted TTS settings, and cursor visibility. Coordinates the full push-to-talk → screenshot → MiniMax → TTS → optional pointing pipeline. |
+| `PointingRequestPolicy.swift` | ~80 | Transcript-only gate that requests cursor guidance for explicit pointing, natural location questions, and questions referring to the current page or visible controls while excluding non-visual topics. |
 | `MenuBarPanelManager.swift` | ~259 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel, opens the standalone voice settings window, and installs click-outside-to-dismiss monitoring. |
 | `CompanionPanelView.swift` | ~935 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, recent conversation history with copy controls, model picker, selected voice summary, permissions UI, and quit button. Dark aesthetic using `DS` design system. |
 | `VoiceSettingsView.swift` | ~344 | Searchable and source-filtered MiniMax voice browser with per-voice preview, editable preview text, and volume, speed, pitch, and emotion controls. |
@@ -73,7 +73,8 @@ Worker vars: `MINIMAX_TTS_MODEL`, `MINIMAX_TTS_VOICE_ID`, `MINIMAX_TTS_VOLUME`, 
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | MiniMax-compatible vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
-| `ElevenLabsTTSClient.swift` | ~165 | MiniMax TTS client. Fetches voice metadata, sends text with voice, volume, speed, pitch, and emotion settings to the Worker proxy, and plays audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
+| `ElevenLabsTTSClient.swift` | ~300 | MiniMax TTS client. Fetches voice metadata, synthesizes streamed response sentences in order, and manages a cancellable `AVAudioPlayer` queue using persisted voice, volume, speed, pitch, and emotion settings. |
+| `StreamingSpeechSegmenter.swift` | ~180 | Converts accumulated LLM text into complete speakable sentences, skips fenced code and point tags, and feeds ordered segments into the MiniMax TTS playback queue. |
 | `ElementLocationDetector.swift` | ~335 | Legacy Claude Computer Use coordinate helper. It is not part of the active MiniMax response pipeline. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
