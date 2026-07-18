@@ -92,26 +92,6 @@ final class CompanionManager: ObservableObject {
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
 
-    // MARK: - Onboarding Video State (shared across all screen overlays)
-
-    @Published var onboardingVideoPlayer: AVPlayer?
-    @Published var showOnboardingVideo: Bool = false
-    @Published var onboardingVideoOpacity: Double = 0.0
-    private var onboardingVideoEndObserver: NSObjectProtocol?
-    private var onboardingDemoTimeObserver: Any?
-
-    // MARK: - Onboarding Prompt Bubble
-
-    /// Text streamed character-by-character on the cursor after the onboarding video ends.
-    @Published var onboardingPromptText: String = ""
-    @Published var onboardingPromptOpacity: Double = 0.0
-    @Published var showOnboardingPrompt: Bool = false
-
-    // MARK: - Onboarding Music
-
-    private var onboardingMusicPlayer: AVAudioPlayer?
-    private var onboardingMusicFadeTimer: Timer?
-
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
@@ -172,10 +152,62 @@ final class CompanionManager: ObservableObject {
         return storedModel ?? "MiniMax-M3"
     }()
 
+    @Published var selectedTTSVoiceID: String = UserDefaults.standard.string(forKey: "selectedMiniMaxTTSVoiceID")
+        ?? "Chinese (Mandarin)_Warm_Bestie"
+    @Published var ttsVolume: Double = {
+        guard UserDefaults.standard.object(forKey: "miniMaxTTSVolume") != nil else { return 2.5 }
+        return min(max(UserDefaults.standard.double(forKey: "miniMaxTTSVolume"), 0.1), 10)
+    }()
+    @Published private(set) var availableTTSVoices: [MiniMaxVoiceOption] = []
+    @Published private(set) var isLoadingTTSVoices = false
+    @Published private(set) var ttsVoiceCatalogErrorMessage: String?
+
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
+    }
+
+    func setSelectedTTSVoiceID(_ voiceID: String) {
+        selectedTTSVoiceID = voiceID
+        UserDefaults.standard.set(voiceID, forKey: "selectedMiniMaxTTSVoiceID")
+    }
+
+    func setTTSVolume(_ volume: Double) {
+        let normalizedVolume = min(max(volume, 0.1), 10)
+        ttsVolume = normalizedVolume
+        UserDefaults.standard.set(normalizedVolume, forKey: "miniMaxTTSVolume")
+    }
+
+    func loadAvailableTTSVoices() {
+        guard !isLoadingTTSVoices else { return }
+        isLoadingTTSVoices = true
+        ttsVoiceCatalogErrorMessage = nil
+
+        Task {
+            do {
+                availableTTSVoices = try await elevenLabsTTSClient.fetchAvailableVoices()
+            } catch {
+                ttsVoiceCatalogErrorMessage = "Couldn't load voices"
+                print("⚠️ MiniMax voice catalog error: \(error)")
+            }
+            isLoadingTTSVoices = false
+        }
+    }
+
+    func previewSelectedTTSVoice() {
+        elevenLabsTTSClient.stopPlayback()
+        Task {
+            do {
+                try await elevenLabsTTSClient.speakText(
+                    "你好，我是 Clicky。",
+                    voiceID: selectedTTSVoiceID,
+                    volume: ttsVolume
+                )
+            } catch {
+                print("⚠️ MiniMax voice preview error: \(error)")
+            }
+        }
     }
 
     /// User preference for whether the Clicky cursor should be shown.
@@ -192,7 +224,6 @@ final class CompanionManager: ObservableObject {
         transientHideTask = nil
 
         if enabled {
-            overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         } else {
@@ -201,120 +232,23 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Whether the user has completed onboarding at least once. Persisted
-    /// to UserDefaults so the Start button only appears on first launch.
-    var hasCompletedOnboarding: Bool {
-        get { UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") }
-        set { UserDefaults.standard.set(newValue, forKey: "hasCompletedOnboarding") }
-    }
-
     func start() {
         refreshAllPermissions()
-        clickyDebugLog("manager.start accessibility=\(hasAccessibilityPermission) screen=\(hasScreenRecordingPermission) mic=\(hasMicrophonePermission) screenContent=\(hasScreenContentPermission) onboarded=\(hasCompletedOnboarding) all=\(allPermissionsGranted)")
-        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
+        clickyDebugLog("manager.start accessibility=\(hasAccessibilityPermission) screen=\(hasScreenRecordingPermission) mic=\(hasMicrophonePermission) screenContent=\(hasScreenContentPermission) all=\(allPermissionsGranted)")
+        print("🔑 Clicky start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
+        // Eagerly touch the API clients so network setup begins before the first interaction.
         _ = claudeAPI
+        loadAvailableTTSVoices()
 
-        // If the user already completed onboarding AND all permissions are
-        // still granted, show the cursor overlay immediately. If permissions
-        // were revoked (e.g. signing change), don't show the cursor — the
-        // panel will show the permissions UI instead.
-        if hasCompletedOnboarding && allPermissionsGranted && isClickyCursorEnabled {
-            overlayWindowManager.hasShownOverlayBefore = true
+        // Show the cursor immediately when permissions are available. If signing
+        // changes revoke them, the panel shows the permission controls instead.
+        if allPermissionsGranted && isClickyCursorEnabled {
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
-        }
-    }
-
-    /// Called by BlueCursorView after the buddy finishes its pointing
-    /// animation and returns to cursor-following mode.
-    /// Triggers the onboarding sequence — dismisses the panel and restarts
-    /// the overlay so the welcome animation and intro video play.
-    func triggerOnboarding() {
-        // Post notification so the panel manager can dismiss the panel
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-
-        // Mark onboarding as completed so the Start button won't appear
-        // again on future launches — the cursor will auto-show instead
-        hasCompletedOnboarding = true
-
-        ClickyAnalytics.trackOnboardingStarted()
-
-        // Play Besaid theme at 60% volume, fade out after 1m 30s
-        startOnboardingMusic()
-
-        // Show the overlay for the first time — isFirstAppearance triggers
-        // the welcome animation and onboarding video
-        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-        isOverlayVisible = true
-    }
-
-    /// Replays the onboarding experience from the "Watch Onboarding Again"
-    /// footer link. Same flow as triggerOnboarding but the cursor overlay
-    /// is already visible so we just restart the welcome animation and video.
-    func replayOnboarding() {
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-        ClickyAnalytics.trackOnboardingReplayed()
-        startOnboardingMusic()
-        // Tear down any existing overlays and recreate with isFirstAppearance = true
-        overlayWindowManager.hasShownOverlayBefore = false
-        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-        isOverlayVisible = true
-    }
-
-    private func stopOnboardingMusic() {
-        onboardingMusicFadeTimer?.invalidate()
-        onboardingMusicFadeTimer = nil
-        onboardingMusicPlayer?.stop()
-        onboardingMusicPlayer = nil
-    }
-
-    private func startOnboardingMusic() {
-        stopOnboardingMusic()
-        guard let musicURL = Bundle.main.url(forResource: "ff", withExtension: "mp3") else {
-            print("⚠️ Clicky: ff.mp3 not found in bundle")
-            return
-        }
-
-        do {
-            let player = try AVAudioPlayer(contentsOf: musicURL)
-            player.volume = 0.3
-            player.play()
-            self.onboardingMusicPlayer = player
-
-            // After 1m 30s, fade the music out over 3s
-            onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: 90.0, repeats: false) { [weak self] _ in
-                self?.fadeOutOnboardingMusic()
-            }
-        } catch {
-            print("⚠️ Clicky: Failed to play onboarding music: \(error)")
-        }
-    }
-
-    private func fadeOutOnboardingMusic() {
-        guard let player = onboardingMusicPlayer else { return }
-
-        let fadeSteps = 30
-        let fadeDuration: Double = 3.0
-        let stepInterval = fadeDuration / Double(fadeSteps)
-        let volumeDecrement = player.volume / Float(fadeSteps)
-        var stepsRemaining = fadeSteps
-
-        onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] timer in
-            stepsRemaining -= 1
-            player.volume -= volumeDecrement
-
-            if stepsRemaining <= 0 {
-                timer.invalidate()
-                player.stop()
-                self?.onboardingMusicPlayer = nil
-                self?.onboardingMusicFadeTimer = nil
-            }
         }
     }
 
@@ -393,7 +327,7 @@ final class CompanionManager: ObservableObject {
 
     /// Triggers the macOS screen content picker by performing a dummy
     /// screenshot capture. Once the user approves, we persist the grant
-    /// so they're never asked again during onboarding.
+    /// so they're not asked again on every launch.
     @Published private(set) var isRequestingScreenContent = false
 
     func requestScreenContentPermission() {
@@ -422,9 +356,7 @@ final class CompanionManager: ObservableObject {
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
                     ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
-                    // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
-                        overlayWindowManager.hasShownOverlayBefore = true
+                    if allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
                     }
@@ -527,7 +459,6 @@ final class CompanionManager: ObservableObject {
         transientHideTask = nil
 
         if !isOverlayVisible {
-            overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         }
@@ -561,10 +492,8 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
-            clickyDebugLog("shortcut pressed dictationInProgress=\(buddyDictationManager.isDictationInProgress) onboardingVideo=\(showOnboardingVideo)")
+            clickyDebugLog("shortcut pressed dictationInProgress=\(buddyDictationManager.isDictationInProgress)")
             guard !buddyDictationManager.isDictationInProgress else { return }
-            // Don't register push-to-talk while the onboarding video is playing
-            guard !showOnboardingVideo else { return }
 
             // Cancel any pending transient hide so the overlay stays visible
             transientHideTask?.cancel()
@@ -572,7 +501,6 @@ final class CompanionManager: ObservableObject {
 
             // If the cursor is hidden, bring it back transiently for this interaction
             if !isClickyCursorEnabled && !isOverlayVisible {
-                overlayWindowManager.hasShownOverlayBefore = true
                 overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
             }
@@ -586,18 +514,6 @@ final class CompanionManager: ObservableObject {
             currentResponseTaskIdentifier = UUID()
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
-
-            // Dismiss the onboarding prompt if it's showing
-            if showOnboardingPrompt {
-                withAnimation(.easeOut(duration: 0.3)) {
-                    onboardingPromptOpacity = 0.0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    self.showOnboardingPrompt = false
-                    self.onboardingPromptText = ""
-                }
-            }
-    
 
             ClickyAnalytics.trackPushToTalkStarted()
 
@@ -800,7 +716,6 @@ final class CompanionManager: ObservableObject {
                 if let pointCoordinate,
                    let targetScreenCapture {
                     if !isOverlayVisible {
-                        overlayWindowManager.hasShownOverlayBefore = true
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
                         clickyDebugLog("point overlay-show-for-target")
@@ -834,7 +749,11 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
+                        try await elevenLabsTTSClient.speakText(
+                            spokenText,
+                            voiceID: selectedTTSVoiceID,
+                            volume: ttsVolume
+                        )
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
                     } catch {
@@ -1065,197 +984,4 @@ final class CompanionManager: ObservableObject {
             + "\n\n[previous assistant response truncated for context]"
     }
 
-    // MARK: - Onboarding Video
-
-    /// Sets up the onboarding video player, starts playback, and schedules
-    /// the demo interaction at 40s. Called by BlueCursorView when onboarding starts.
-    func setupOnboardingVideo() {
-        guard let videoURL = URL(string: "https://stream.mux.com/e5jB8UuSrtFABVnTHCR7k3sIsmcUHCyhtLu1tzqLlfs.m3u8") else { return }
-
-        let player = AVPlayer(url: videoURL)
-        player.isMuted = false
-        player.volume = 0.0
-        self.onboardingVideoPlayer = player
-        self.showOnboardingVideo = true
-        self.onboardingVideoOpacity = 0.0
-
-        // Start playback immediately — the video plays while invisible,
-        // then we fade in both the visual and audio over 1s.
-        player.play()
-
-        // Wait for SwiftUI to mount the view, then set opacity to 1.
-        // The .animation modifier on the view handles the actual animation.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            self.onboardingVideoOpacity = 1.0
-            // Fade audio volume from 0 → 1 over 2s to match visual fade
-            self.fadeInVideoAudio(player: player, targetVolume: 1.0, duration: 2.0)
-        }
-
-        // At 40 seconds into the video, trigger the onboarding demo where
-        // Clicky flies to something interesting on screen and comments on it
-        let demoTriggerTime = CMTime(seconds: 40, preferredTimescale: 600)
-        onboardingDemoTimeObserver = player.addBoundaryTimeObserver(
-            forTimes: [NSValue(time: demoTriggerTime)],
-            queue: .main
-        ) { [weak self] in
-            ClickyAnalytics.trackOnboardingDemoTriggered()
-            self?.performOnboardingDemoInteraction()
-        }
-
-        // Fade out and clean up when the video finishes
-        onboardingVideoEndObserver = NotificationCenter.default.addObserver(
-            forName: AVPlayerItem.didPlayToEndTimeNotification,
-            object: player.currentItem,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self else { return }
-            ClickyAnalytics.trackOnboardingVideoCompleted()
-            self.onboardingVideoOpacity = 0.0
-            // Wait for the 2s fade-out animation to complete before tearing down
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                self.tearDownOnboardingVideo()
-                // After the video disappears, stream in the prompt to try talking
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    self.startOnboardingPromptStream()
-                }
-            }
-        }
-    }
-
-    func tearDownOnboardingVideo() {
-        showOnboardingVideo = false
-        if let timeObserver = onboardingDemoTimeObserver {
-            onboardingVideoPlayer?.removeTimeObserver(timeObserver)
-            onboardingDemoTimeObserver = nil
-        }
-        onboardingVideoPlayer?.pause()
-        onboardingVideoPlayer = nil
-        if let observer = onboardingVideoEndObserver {
-            NotificationCenter.default.removeObserver(observer)
-            onboardingVideoEndObserver = nil
-        }
-    }
-
-    private func startOnboardingPromptStream() {
-        let message = "press control + option and introduce yourself"
-        onboardingPromptText = ""
-        showOnboardingPrompt = true
-        onboardingPromptOpacity = 0.0
-
-        withAnimation(.easeIn(duration: 0.4)) {
-            onboardingPromptOpacity = 1.0
-        }
-
-        var currentIndex = 0
-        Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
-            guard currentIndex < message.count else {
-                timer.invalidate()
-                // Auto-dismiss after 10 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
-                    guard self.showOnboardingPrompt else { return }
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        self.onboardingPromptOpacity = 0.0
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        self.showOnboardingPrompt = false
-                        self.onboardingPromptText = ""
-                    }
-                }
-                return
-            }
-            let index = message.index(message.startIndex, offsetBy: currentIndex)
-            self.onboardingPromptText.append(message[index])
-            currentIndex += 1
-        }
-    }
-
-    /// Gradually raises an AVPlayer's volume from its current level to the
-    /// target over the specified duration, creating a smooth audio fade-in.
-    private func fadeInVideoAudio(player: AVPlayer, targetVolume: Float, duration: Double) {
-        let steps = 20
-        let stepInterval = duration / Double(steps)
-        let volumeIncrement = (targetVolume - player.volume) / Float(steps)
-        var stepsRemaining = steps
-
-        Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { timer in
-            stepsRemaining -= 1
-            player.volume += volumeIncrement
-
-            if stepsRemaining <= 0 {
-                timer.invalidate()
-                player.volume = targetVolume
-            }
-        }
-    }
-
-    // MARK: - Onboarding Demo Interaction
-
-    private static let onboardingDemoSystemPrompt = """
-    you're clicky, a small blue cursor buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
-
-    make a short quirky 3-6 word observation about the specific thing you picked — something fun, playful, or curious that shows you actually read/recognized it. no emojis ever. NEVER quote or repeat text you see on screen — just react to it. keep it to 6 words max, no exceptions.
-
-    CRITICAL COORDINATE RULE: use normalized integer coordinates from 0 through 1000. top-left is (0,0), center is (500,500), and bottom-right is (1000,1000). you MUST only pick elements near the CENTER of the screen: both x and y must be between 200 and 800. do NOT pick menu bar items, dock icons, sidebar items, or anything near an edge. if the only interesting things are near the edges, pick something boring in the center instead.
-
-    respond with ONLY your short comment followed by the coordinate tag. nothing else. all lowercase.
-
-    format: your comment [POINT_V2:x,y:label]
-
-    visually identify the target's bounding box, verify it against the current screenshot, and return the center. never use the legacy [POINT:...] format.
-    """
-
-    /// Captures a screenshot and asks Claude to find something interesting to
-    /// point at, then triggers the buddy's flight animation. Used during
-    /// onboarding to demo the pointing feature while the intro video plays.
-    func performOnboardingDemoInteraction() {
-        // Don't interrupt an active voice response
-        guard voiceState == .idle || voiceState == .responding else { return }
-
-        Task {
-            do {
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(
-                    longEdgeInPixels: Self.pointingScreenshotLongEdgeInPixels
-                )
-
-                // Only send the cursor screen so Claude can't pick something
-                // on a different monitor that we can't point at.
-                guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) else {
-                    print("🎯 Onboarding demo: no cursor screen found")
-                    return
-                }
-
-                let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label)]
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.onboardingDemoSystemPrompt,
-                    userPrompt: "look around my screen and find something interesting to point at",
-                    temperature: 0.1,
-                    onTextChunk: { _ in }
-                )
-
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-
-                guard let pointCoordinate = parseResult.coordinate else {
-                    print("🎯 Onboarding demo: no element to point at")
-                    return
-                }
-
-                let displayFrame = cursorScreenCapture.displayFrame
-                let globalLocation = Self.globalScreenLocation(
-                    fromNormalizedCoordinate: pointCoordinate,
-                    displayFrame: displayFrame
-                )
-
-                // Set custom bubble text so the pointing animation uses Claude's
-                // comment instead of a random phrase
-                detectedElementBubbleText = parseResult.spokenText
-                detectedElementScreenLocation = globalLocation
-                detectedElementDisplayFrame = displayFrame
-                print("🎯 Onboarding demo: pointing at \"\(parseResult.elementLabel ?? "element")\" — \"\(parseResult.spokenText)\"")
-            } catch {
-                print("⚠️ Onboarding demo error: \(error)")
-            }
-        }
-    }
 }

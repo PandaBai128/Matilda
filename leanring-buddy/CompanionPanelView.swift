@@ -25,11 +25,14 @@ struct CompanionPanelView: View {
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
 
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            if companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 12)
 
                 modelPickerRow
+                    .padding(.horizontal, 16)
+
+                voiceSettingsSection
                     .padding(.horizontal, 16)
 
                 Spacer()
@@ -53,31 +56,6 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
-            if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                startButton
-                    .padding(.horizontal, 16)
-            }
-
-            // Show Clicky toggle — hidden for now
-            // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            //     Spacer()
-            //         .frame(height: 16)
-            //
-            //     showClickyCursorToggleRow
-            //         .padding(.horizontal, 16)
-            // }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                dmFarzaButton
-                    .padding(.horizontal, 16)
-            }
-
             Spacer()
                 .frame(height: 12)
 
@@ -91,6 +69,11 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+        .onAppear {
+            if companionManager.availableTTSVoices.isEmpty {
+                companionManager.loadAvailableTTSVoices()
+            }
+        }
     }
 
     // MARK: - Header
@@ -138,69 +121,23 @@ struct CompanionPanelView: View {
 
     @ViewBuilder
     private var permissionsCopySection: some View {
-        if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+        if companionManager.allPermissionsGranted {
             Text("Hold Control+Option to talk.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-        } else if companionManager.allPermissionsGranted {
-            Text("You're all set. Hit Start to meet Clicky.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else if companionManager.hasCompletedOnboarding {
-            // Permissions were revoked after onboarding — tell user to re-grant
+        } else {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Permissions needed")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant all four below to keep using Clicky.")
+                Text("Grant all four permissions below to use Clicky.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Hi, I'm Farza. This is Clicky.")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Text("A side project I made for fun to help me learn stuff as I use my computer.")
-                    .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text("Nothing runs in the background. Clicky will only take a screenshot when you press the hot key. So, you can give that permission in peace. If you are still sus, eh, I can't do much there champ.")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    // MARK: - Email + Start Button
-
-    @ViewBuilder
-    private var startButton: some View {
-        if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            Button(action: {
-                companionManager.triggerOnboarding()
-            }) {
-                Text("Start")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(DS.Colors.textOnAccent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
-                            .fill(DS.Colors.accent)
-                    )
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
         }
     }
 
@@ -604,6 +541,115 @@ struct CompanionPanelView: View {
         .pointerCursor()
     }
 
+    private var voiceSettingsSection: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Voice")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                TextField("MiniMax voice ID", text: Binding(
+                    get: { companionManager.selectedTTSVoiceID },
+                    set: { companionManager.setSelectedTTSVoiceID($0) }
+                ))
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textPrimary)
+                .padding(.horizontal, 8)
+                .frame(width: 142, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+
+                Menu {
+                    if companionManager.availableTTSVoices.isEmpty {
+                        Text(companionManager.isLoadingTTSVoices ? "Loading voices..." : "No voices loaded")
+                    } else {
+                        ForEach(["System", "Cloned", "Generated"], id: \.self) { category in
+                            let voices = companionManager.availableTTSVoices.filter { $0.category == category }
+                            if !voices.isEmpty {
+                                Section(category) {
+                                    ForEach(voices) { voice in
+                                        Button(voice.displayName) {
+                                            companionManager.setSelectedTTSVoiceID(voice.voiceID)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Divider()
+                    Button("Reload voice library") {
+                        companionManager.loadAvailableTTSVoices()
+                    }
+                } label: {
+                    Image(systemName: companionManager.isLoadingTTSVoices ? "arrow.triangle.2.circlepath" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                        )
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .pointerCursor()
+                .help("Choose a MiniMax voice")
+            }
+
+            HStack(spacing: 8) {
+                Text("Volume")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Slider(value: Binding(
+                    get: { companionManager.ttsVolume },
+                    set: { companionManager.setTTSVolume($0) }
+                ), in: 0.1...10, step: 0.1)
+                .tint(DS.Colors.accent)
+
+                Text(companionManager.ttsVolume.formatted(.number.precision(.fractionLength(1))))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 25, alignment: .trailing)
+
+                Button(action: {
+                    companionManager.previewSelectedTTSVoice()
+                }) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .help("Preview voice")
+            }
+
+            if let errorMessage = companionManager.ttsVoiceCatalogErrorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.warning)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .padding(.top, 6)
+    }
+
     private var voiceInputButton: some View {
         let isActive = companionManager.buddyDictationManager.isDictationInProgress
             || companionManager.buddyDictationManager.isPreparingToRecord
@@ -680,43 +726,6 @@ struct CompanionPanelView: View {
         }
     }
 
-    // MARK: - DM Farza Button
-
-    private var dmFarzaButton: some View {
-        Button(action: {
-            if let url = URL(string: "https://x.com/farzatv") {
-                NSWorkspace.shared.open(url)
-            }
-        }) {
-            HStack(spacing: 8) {
-                Image(systemName: "bubble.left.fill")
-                    .font(.system(size: 12, weight: .medium))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Got feedback? DM me")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("Bugs, ideas, anything — I read every message.")
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-            }
-            .foregroundColor(DS.Colors.textSecondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
-    }
-
     // MARK: - Footer
 
     private var footerSection: some View {
@@ -735,23 +744,7 @@ struct CompanionPanelView: View {
             .buttonStyle(.plain)
             .pointerCursor()
 
-            if companionManager.hasCompletedOnboarding {
-                Spacer()
-
-                Button(action: {
-                    companionManager.replayOnboarding()
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "play.circle")
-                            .font(.system(size: 11, weight: .medium))
-                        Text("Watch Onboarding Again")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .foregroundColor(DS.Colors.textTertiary)
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
+            Spacer()
         }
     }
 
@@ -779,7 +772,7 @@ struct CompanionPanelView: View {
     }
 
     private var statusText: String {
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
+        if !companionManager.allPermissionsGranted {
             return "Setup"
         }
         if !companionManager.isOverlayVisible {

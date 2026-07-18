@@ -10,6 +10,7 @@ const port = Number(env.PORT || 8787);
 const minimaxAPIHost = (env.MINIMAX_API_HOST || "https://api.minimax.io").replace(/\/+$/, "");
 const MINIMAX_MESSAGES_URL = `${minimaxAPIHost}/anthropic/v1/messages`;
 const MINIMAX_TTS_URL = `${minimaxAPIHost}/v1/t2a_v2`;
+const MINIMAX_VOICES_URL = `${minimaxAPIHost}/v1/get_voice`;
 const defaultMiniMaxTTSVolume = 2.5;
 
 const server = createServer(async (request, response) => {
@@ -28,6 +29,11 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/tts") {
       await handleTTS(request, response);
+      return;
+    }
+
+    if (url.pathname === "/voices") {
+      await handleVoices(response);
       return;
     }
 
@@ -115,9 +121,9 @@ async function handleTTS(request, response) {
       language_boost: "auto",
       output_format: "hex",
       voice_setting: {
-        voice_id: env.MINIMAX_TTS_VOICE_ID || "Chinese (Mandarin)_Warm_Bestie",
+        voice_id: incomingBody.voice_id?.trim() || env.MINIMAX_TTS_VOICE_ID || "Chinese (Mandarin)_Warm_Bestie",
         speed: 1,
-        vol: parseMiniMaxTTSVolume(env.MINIMAX_TTS_VOLUME),
+        vol: parseMiniMaxTTSVolume(incomingBody.volume ?? env.MINIMAX_TTS_VOLUME),
         pitch: 0,
       },
       audio_setting: {
@@ -154,6 +160,25 @@ async function handleTTS(request, response) {
   const audioBuffer = Buffer.from(payload.data.audio.trim(), "hex");
   response.writeHead(200, { "content-type": "audio/mpeg" });
   response.end(audioBuffer);
+}
+
+async function handleVoices(response) {
+  requireEnv(["MINIMAX_API_KEY"]);
+
+  const upstreamResponse = await fetch(MINIMAX_VOICES_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ voice_type: "all" }),
+  });
+
+  const responseText = await upstreamResponse.text();
+  if (!upstreamResponse.ok) {
+    console.error("[local proxy] MiniMax voice catalog error:", responseText);
+  }
+  sendText(response, upstreamResponse.status, responseText, "application/json");
 }
 
 async function handleTranscribeURL(request, response) {
@@ -248,7 +273,7 @@ function parseMiniMaxTTSVolume(rawVolume) {
     return defaultMiniMaxTTSVolume;
   }
 
-  return Math.max(0, Math.min(parsedVolume, 10));
+  return Math.max(0.1, Math.min(parsedVolume, 10));
 }
 
 async function readJSON(request) {

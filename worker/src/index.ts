@@ -7,6 +7,7 @@
  * Routes:
  *   POST /chat           -> MiniMax Anthropic-compatible Messages API
  *   POST /tts            -> MiniMax T2A HTTP API, returned as audio/mpeg
+ *   POST /voices         -> MiniMax voice catalog for the configured account
  *   POST /transcribe-url -> Tencent Cloud realtime ASR signed websocket URL
  */
 
@@ -34,6 +35,7 @@ export default {
     const minimaxAPIHost = (env.MINIMAX_API_HOST || "https://api.minimax.io").replace(/\/+$/, "");
     const minimaxMessagesURL = `${minimaxAPIHost}/anthropic/v1/messages`;
     const minimaxTTSURL = `${minimaxAPIHost}/v1/t2a_v2`;
+    const minimaxVoicesURL = `${minimaxAPIHost}/v1/get_voice`;
 
     if (request.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
@@ -46,6 +48,10 @@ export default {
 
       if (url.pathname === "/tts") {
         return await handleTTS(request, env, minimaxTTSURL);
+      }
+
+      if (url.pathname === "/voices") {
+        return await handleVoices(env, minimaxVoicesURL);
       }
 
       if (url.pathname === "/transcribe-url") {
@@ -106,8 +112,9 @@ function applyMiniMaxChatDefaults(body: Record<string, unknown>, env: Env): void
 }
 
 async function handleTTS(request: Request, env: Env, minimaxTTSURL: string): Promise<Response> {
-  const incomingBody = await request.json<{ text?: string }>();
+  const incomingBody = await request.json<{ text?: string; voice_id?: string; volume?: number }>();
   const text = incomingBody.text?.trim();
+  const requestedVoiceId = incomingBody.voice_id?.trim();
 
   if (!text) {
     return jsonResponse({ error: "Missing text for TTS." }, 400);
@@ -126,9 +133,9 @@ async function handleTTS(request: Request, env: Env, minimaxTTSURL: string): Pro
       language_boost: "auto",
       output_format: "hex",
       voice_setting: {
-        voice_id: env.MINIMAX_TTS_VOICE_ID || "Chinese (Mandarin)_Warm_Bestie",
+        voice_id: requestedVoiceId || env.MINIMAX_TTS_VOICE_ID || "Chinese (Mandarin)_Warm_Bestie",
         speed: 1,
-        vol: parseMiniMaxTTSVolume(env.MINIMAX_TTS_VOLUME),
+        vol: parseMiniMaxTTSVolume(incomingBody.volume ?? env.MINIMAX_TTS_VOLUME),
         pitch: 0,
       },
       audio_setting: {
@@ -169,6 +176,27 @@ async function handleTTS(request: Request, env: Env, minimaxTTSURL: string): Pro
   return new Response(hexToUint8Array(payload.data.audio), {
     status: 200,
     headers: { "content-type": "audio/mpeg" },
+  });
+}
+
+async function handleVoices(env: Env, minimaxVoicesURL: string): Promise<Response> {
+  const response = await fetch(minimaxVoicesURL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ voice_type: "all" }),
+  });
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    console.error(`[/voices] MiniMax voice catalog error ${response.status}: ${responseText}`);
+  }
+
+  return new Response(responseText, {
+    status: response.status,
+    headers: { "content-type": "application/json" },
   });
 }
 
@@ -227,13 +255,13 @@ function makeHotwordList(keyterms: string[]): string | null {
   return normalizedKeyterms.length > 0 ? normalizedKeyterms.join(",") : null;
 }
 
-function parseMiniMaxTTSVolume(rawVolume: string | undefined): number {
+function parseMiniMaxTTSVolume(rawVolume: string | number | undefined): number {
   const parsedVolume = Number(rawVolume || defaultMiniMaxTTSVolume);
   if (!Number.isFinite(parsedVolume)) {
     return defaultMiniMaxTTSVolume;
   }
 
-  return Math.max(0, Math.min(parsedVolume, 10));
+  return Math.max(0.1, Math.min(parsedVolume, 10));
 }
 
 function makeSortedQueryString(params: Record<string, string>): string {

@@ -141,12 +141,10 @@ leanring-buddy/          # Swift source (yes, the typo stays)
   AssemblyAI*.swift         # Legacy real-time transcription fallback
   BuddyDictation*.swift     # Push-to-talk pipeline
 worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Routes: /chat, /tts, /transcribe-url
+  src/index.ts              # Routes: /chat, /tts, /voices, /transcribe-url
 CLAUDE.md                # Full architecture doc (agents read this)
 ```
 
 ## Contributing
 
 PRs welcome. If you're using Claude Code, it already knows the codebase — just tell it what you want to build and point it at `CLAUDE.md`.
-
-Got feedback? DM me on X [@farzatv](https://x.com/farzatv).
