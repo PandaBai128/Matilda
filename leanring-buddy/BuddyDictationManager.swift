@@ -311,7 +311,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         updateDraftText: @escaping (String) -> Void,
         submitDraftText: @escaping (String) -> Void
     ) async {
-        clickyDebugLog("dictation keyboard-start-entry")
+        matildaDebugLog("dictation keyboard start entry")
         await startPushToTalk(
             startSource: .keyboardShortcut,
             currentDraftText: currentDraftText,
@@ -328,7 +328,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     func stopPushToTalkFromKeyboardShortcut() {
-        clickyDebugLog("dictation keyboard-stop-entry activeSource=\(String(describing: activeStartSource))")
+        matildaDebugLog("dictation keyboard stop entry")
         stopPushToTalk(expectedStartSource: .keyboardShortcut)
     }
 
@@ -387,7 +387,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     ) async {
         guard !isDictationInProgress else { return }
 
-        clickyDebugLog("dictation start-requested source=\(startSource) needsInitialPermissionPrompt=\(needsInitialPermissionPrompt)")
+        matildaDebugLog("dictation start requested")
         print("🎙️ BuddyDictationManager: start requested (\(startSource))")
 
         if needsInitialPermissionPrompt {
@@ -410,19 +410,19 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isPreparingToRecord = true
 
         guard await requestMicrophoneAndSpeechPermissionsWithoutDuplicatePrompts() else {
-            clickyDebugLog("dictation permission-check-failed")
+            matildaDebugLog("dictation permission check failed")
             print("🎙️ BuddyDictationManager: permissions missing or denied")
             isPreparingToRecord = false
             return
         }
         guard !Task.isCancelled else {
-            clickyDebugLog("dictation cancelled-during-permission-check")
+            matildaDebugLog("dictation cancelled during permission check")
             print("🎙️ BuddyDictationManager: start cancelled (shortcut released during permission check)")
             isPreparingToRecord = false
             return
         }
         guard pendingStartRequestIdentifier == startRequestIdentifier else {
-            clickyDebugLog("dictation start-superseded")
+            matildaDebugLog("dictation start superseded")
             print("🎙️ BuddyDictationManager: start request superseded")
             isPreparingToRecord = false
             return
@@ -450,7 +450,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         lastRecordedAudioPowerSampleDate = .distantPast
 
         guard !Task.isCancelled else {
-            clickyDebugLog("dictation cancelled-before-recording")
+            matildaDebugLog("dictation cancelled before recording")
             print("🎙️ BuddyDictationManager: start cancelled (shortcut released before recording began)")
             resetSessionState()
             return
@@ -459,7 +459,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         do {
             try await startRecognitionSession()
             guard !Task.isCancelled else {
-                clickyDebugLog("dictation cancelled-during-session-start")
+                matildaDebugLog("dictation cancelled during session start")
                 print("🎙️ BuddyDictationManager: start cancelled (shortcut released during session start)")
                 audioEngine.stop()
                 audioEngine.inputNode.removeTap(onBus: 0)
@@ -471,7 +471,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 microphoneButtonRecordingStartedAt = Date()
             }
             isPreparingToRecord = false
-            clickyDebugLog("dictation recognition-started")
+            matildaDebugLog("dictation recognition started")
             print("🎙️ BuddyDictationManager: recognition session started")
         } catch {
             isPreparingToRecord = false
@@ -479,7 +479,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 from: error,
                 fallback: "couldn't start voice input. try again."
             )
-            clickyDebugLog("dictation recognition-failed provider=\(transcriptionProvider.displayName) error=\(error)")
+            matildaDebugLog("dictation recognition failed")
             print("❌ BuddyDictationManager: failed to start recognition session (\(transcriptionProvider.displayName)): \(error)")
             resetSessionState()
         }
@@ -489,13 +489,13 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         pendingStartRequestIdentifier = UUID()
 
         guard activeStartSource == expectedStartSource else {
-            clickyDebugLog("dictation stop-ignored expected=\(expectedStartSource) active=\(String(describing: activeStartSource))")
+            matildaDebugLog("dictation stop ignored for inactive source")
             isPreparingToRecord = false
             return
         }
         guard !isFinalizingTranscript else { return }
 
-        clickyDebugLog("dictation stop-requested source=\(expectedStartSource)")
+        matildaDebugLog("dictation stop requested")
         print("🎙️ BuddyDictationManager: stop requested (\(expectedStartSource))")
 
         isRecordingFromMicrophoneButton = false
@@ -531,7 +531,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         let transcriptionSessionIdentifier = UUID()
         activeTranscriptionSessionIdentifier = transcriptionSessionIdentifier
 
-        clickyDebugLog("dictation opening-provider \(transcriptionProvider.displayName)")
+        matildaDebugLog("dictation opening transcription provider")
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
 
         let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
@@ -552,7 +552,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                     guard let self else { return }
                     guard self.activeTranscriptionSessionIdentifier == transcriptionSessionIdentifier,
                           !self.hasFinishedCurrentDictationSession else {
-                        clickyDebugLog("dictation ignored-stale-final-transcript \(clickyDebugSnippet(transcriptText))")
+                        matildaDebugLog("dictation ignored stale final transcript")
                         return
                     }
 
@@ -688,10 +688,9 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     private func buildTranscriptionKeyterms() -> [String] {
         let baseKeyterms = [
-            "Learning Buddy",
+            "壮壮",
+            "Matilda",
             "Codex",
-            "Claude",
-            "Anthropic",
             "OpenAI",
             "SwiftUI",
             "Xcode",

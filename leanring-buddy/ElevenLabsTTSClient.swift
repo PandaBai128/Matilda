@@ -183,7 +183,7 @@ final class ElevenLabsTTSClient: NSObject, AVAudioPlayerDelegate {
             pitch: pitch,
             emotion: emotion
         ))
-        clickyDebugLog("tts segment-enqueued \(clickyDebugSnippet(normalizedText, limit: 100))")
+        matildaDebugLog("tts segment enqueued")
         startStreamingSynthesisIfNeeded()
     }
 
@@ -255,7 +255,7 @@ final class ElevenLabsTTSClient: NSObject, AVAudioPlayerDelegate {
                         try await streamingAudioPlayer.beginSegment()
                         try await streamingAudioPlayer.appendAudioBytes(completeAudioData)
                         await streamingAudioPlayer.endSegment()
-                        clickyDebugLog("tts stream-fallback bytes=\(completeAudioData.count)")
+                        matildaDebugLog("tts stream used complete-audio fallback")
                     } catch {
                         guard self.isCurrentStreamingGeneration(synthesisGeneration),
                               !Self.isCancellationError(error) else { break }
@@ -326,7 +326,7 @@ final class ElevenLabsTTSClient: NSObject, AVAudioPlayerDelegate {
                               userInfo: [NSLocalizedDescriptionKey: "MiniMax returned no streaming audio"])
             }
             await streamingAudioPlayer.endSegment()
-            clickyDebugLog("tts stream-finished bytes=\(totalAudioByteCount)")
+            matildaDebugLog("tts stream finished")
         } catch let error where Self.isCancellationError(error) {
             await streamingAudioPlayer.endSegment()
             throw CancellationError()
@@ -364,7 +364,7 @@ final class ElevenLabsTTSClient: NSObject, AVAudioPlayerDelegate {
         player.volume = 1
         player.prepareToPlay()
         player.play()
-        clickyDebugLog("tts playback-start bytes=\(audioData.count)")
+        matildaDebugLog("tts playback started")
         print("🔊 MiniMax TTS: playing \(audioData.count / 1024)KB audio")
     }
 

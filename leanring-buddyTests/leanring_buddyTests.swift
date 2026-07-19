@@ -7,6 +7,7 @@
 
 import Testing
 import CoreGraphics
+import Foundation
 @testable import Matilda
 
 @MainActor
@@ -284,38 +285,161 @@ struct leanring_buddyTests {
         #expect(fastFraction == 1)
         #expect(abs(mediumFraction - previousFastFraction) < 0.000_001)
         #expect(abs(slowFraction - previousMediumFraction) < 0.000_001)
+        #expect(CompanionCursorTracker.smoothingFramesPerSecond == 60)
+        #expect(CompanionCursorTracker.movementSettlingDelaySeconds == 0.20)
+        let latestMovementDate = Date(timeIntervalSinceReferenceDate: 100)
+        #expect(!CompanionCursorTracker.shouldStopSmoothing(
+            latestMouseMovementDate: latestMovementDate,
+            currentDate: latestMovementDate.addingTimeInterval(0.199)
+        ))
+        #expect(CompanionCursorTracker.shouldStopSmoothing(
+            latestMouseMovementDate: latestMovementDate,
+            currentDate: latestMovementDate.addingTimeInterval(0.20)
+        ))
     }
 
-    @Test func companionAutoHideWaitsForIdleFollowTimeout() async throws {
+    @Test func companionAutoHideReschedulesWithoutAllowingStaleDeadlinesToHide() async throws {
+        let testScheduler = TestCompanionAutoHideScheduler()
+        var visibilityChanges: [Bool] = []
+        let controller = CompanionAutoHideController(
+            scheduler: testScheduler.schedule,
+            visibilityDidChange: { visibilityChanges.append($0) }
+        )
+
         #expect(CompanionManager.defaultCompanionAutoHideDelaySeconds == 10)
-        #expect(!CompanionAutoHidePolicy.shouldHide(
+        controller.configure(
             isEnabled: true,
-            secondsSinceLastMouseMovement: 9.9,
             delaySeconds: 10,
             isInteractionActive: false,
             isFollowingCursor: true
-        ))
-        #expect(CompanionAutoHidePolicy.shouldHide(
+        )
+        controller.recordActivity()
+
+        #expect(testScheduler.entries.count == 2)
+        #expect(testScheduler.entries[0].isCancelled)
+        testScheduler.fireEntry(at: 0)
+        #expect(!controller.isHidden)
+
+        testScheduler.fireEntry(at: 1)
+        #expect(controller.isHidden)
+        #expect(visibilityChanges == [true])
+
+        controller.recordActivity()
+        #expect(!controller.isHidden)
+        controller.configure(
             isEnabled: true,
-            secondsSinceLastMouseMovement: 10,
-            delaySeconds: 10,
-            isInteractionActive: false,
-            isFollowingCursor: true
-        ))
-        #expect(!CompanionAutoHidePolicy.shouldHide(
-            isEnabled: true,
-            secondsSinceLastMouseMovement: 20,
             delaySeconds: 10,
             isInteractionActive: true,
             isFollowingCursor: true
-        ))
-        #expect(!CompanionAutoHidePolicy.shouldHide(
-            isEnabled: true,
-            secondsSinceLastMouseMovement: 20,
-            delaySeconds: 10,
-            isInteractionActive: false,
-            isFollowingCursor: false
-        ))
+        )
+        testScheduler.fireEntry(at: 2)
+        #expect(!controller.isHidden)
+        #expect(visibilityChanges == [true, false])
+    }
+
+    @Test func animationCadenceMatchesInteractionCost() async throws {
+        #expect(CompanionAnimationCadencePolicy.framesPerSecond(
+            voiceState: .idle,
+            navigationMode: .followingCursor
+        ) == nil)
+        #expect(CompanionAnimationCadencePolicy.framesPerSecond(
+            voiceState: .responding,
+            navigationMode: .followingCursor
+        ) == nil)
+        #expect(CompanionAnimationCadencePolicy.framesPerSecond(
+            voiceState: .processing,
+            navigationMode: .followingCursor
+        ) == 12)
+        #expect(CompanionAnimationCadencePolicy.framesPerSecond(
+            voiceState: .listening,
+            navigationMode: .followingCursor
+        ) == 24)
+        #expect(CompanionAnimationCadencePolicy.framesPerSecond(
+            voiceState: .idle,
+            navigationMode: .pointingAtTarget
+        ) == 24)
+        #expect(CompanionAnimationCadencePolicy.framesPerSecond(
+            voiceState: .idle,
+            navigationMode: .navigatingToTarget
+        ) == 30)
+    }
+
+    @Test func activeScreenSelectionReturnsOnlyTheScreenContainingTheMouse() async throws {
+        let leftScreen = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+        let mainScreen = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+
+        #expect(CompanionOverlayGeometry.screenFrame(
+            containing: CGPoint(x: -400, y: 600),
+            availableScreenFrames: [leftScreen, mainScreen]
+        ) == leftScreen)
+        #expect(CompanionOverlayGeometry.screenFrame(
+            containing: CGPoint(x: 900, y: 500),
+            availableScreenFrames: [leftScreen, mainScreen]
+        ) == mainScreen)
+        #expect(CompanionOverlayGeometry.screenFrame(
+            containing: CGPoint(x: 3000, y: 500),
+            availableScreenFrames: [leftScreen, mainScreen]
+        ) == nil)
+    }
+
+    @Test func targetMarkerCenterPreservesAllScreenEdgesAndCorners() async throws {
+        let displayFrame = CGRect(x: 100, y: -200, width: 1728, height: 1117)
+        let normalizedCoordinates = [
+            CGPoint(x: 0, y: 0), CGPoint(x: 500, y: 0), CGPoint(x: 1000, y: 0),
+            CGPoint(x: 0, y: 500), CGPoint(x: 1000, y: 500),
+            CGPoint(x: 0, y: 1000), CGPoint(x: 500, y: 1000), CGPoint(x: 1000, y: 1000)
+        ]
+        let expectedLocalCoordinates = [
+            CGPoint(x: 0, y: 0), CGPoint(x: 864, y: 0), CGPoint(x: 1728, y: 0),
+            CGPoint(x: 0, y: 558.5), CGPoint(x: 1728, y: 558.5),
+            CGPoint(x: 0, y: 1117), CGPoint(x: 864, y: 1117), CGPoint(x: 1728, y: 1117)
+        ]
+
+        for (normalizedCoordinate, expectedLocalCoordinate) in zip(
+            normalizedCoordinates,
+            expectedLocalCoordinates
+        ) {
+            let globalCoordinate = CompanionManager.globalScreenLocation(
+                fromNormalizedCoordinate: normalizedCoordinate,
+                displayFrame: displayFrame
+            )
+            let markerCenter = CompanionOverlayGeometry.localPoint(
+                forGlobalScreenPoint: globalCoordinate,
+                screenFrame: displayFrame
+            )
+            #expect(markerCenter == expectedLocalCoordinate)
+        }
+    }
+
+    @Test func responseFailureMessagesAreAccurateAndNeutral() async throws {
+        let networkMessage = CompanionResponseFailureMessage.spokenMessage(for: URLError(.timedOut))
+        let genericMessage = CompanionResponseFailureMessage.spokenMessage(
+            for: NSError(domain: "MatildaTest", code: 1)
+        )
+
+        #expect(networkMessage.contains("网络"))
+        #expect(genericMessage.contains("没有成功"))
+        #expect(!networkMessage.localizedCaseInsensitiveContains("credit"))
+        #expect(!genericMessage.localizedCaseInsensitiveContains("Farza"))
+    }
+
+    @Test func sourceDoesNotPersistOrPrintSensitiveConversationContent() async throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sensitiveSourceFiles = [
+            "leanring-buddy/CompanionManager.swift",
+            "leanring-buddy/BuddyDictationManager.swift",
+            "leanring-buddy/ElevenLabsTTSClient.swift"
+        ]
+        let combinedSource = try sensitiveSourceFiles.map { relativePath in
+            try String(contentsOf: repositoryRoot.appendingPathComponent(relativePath), encoding: .utf8)
+        }.joined(separator: "\n")
+
+        #expect(!combinedSource.contains("/tmp/clicky-debug.log"))
+        #expect(!combinedSource.contains("clickyDebugSnippet"))
+        #expect(!combinedSource.contains("received transcript:"))
+        #expect(!combinedSource.contains("llm full-response"))
     }
 
     @Test func blinkTimingClosesThenReopensTheImageFrame() async throws {
@@ -342,4 +466,33 @@ struct leanring_buddyTests {
         #expect(restingProgress == 0)
     }
 
+}
+
+@MainActor
+private final class TestCompanionAutoHideScheduler {
+    final class Entry {
+        let action: @MainActor () -> Void
+        var isCancelled = false
+
+        init(action: @escaping @MainActor () -> Void) {
+            self.action = action
+        }
+    }
+
+    private(set) var entries: [Entry] = []
+
+    func schedule(
+        delaySeconds: TimeInterval,
+        action: @escaping @MainActor () -> Void
+    ) -> CompanionScheduledAction {
+        let entry = Entry(action: action)
+        entries.append(entry)
+        return CompanionScheduledAction {
+            entry.isCancelled = true
+        }
+    }
+
+    func fireEntry(at index: Int) {
+        entries[index].action()
+    }
 }

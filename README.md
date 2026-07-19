@@ -205,6 +205,7 @@ Proxy (local Node or Cloudflare Worker)
 leanring-buddy/
   leanring_buddyApp.swift        菜单栏 App 入口
   CompanionManager.swift         语音、截图、LLM、TTS 和指向状态机
+  CompanionOverlayRuntime.swift  单一事件驱动鼠标跟踪、自动隐藏与动画频率策略
   MenuBarPanelManager.swift      NSStatusItem 与浮动面板
   CompanionPanelView.swift       主控制面板和对话历史
   VoiceSettingsView.swift        音色浏览、试听和参数设置
@@ -214,6 +215,7 @@ leanring-buddy/
   BuddyTranscriptionProvider.swift  腾讯 ASR 与 Apple Speech fallback 工厂
   TencentASRStreamingTranscriptionProvider.swift
   OverlayWindow.swift            壮壮头像、状态动画与目标脉冲覆盖层
+  SystemSpeechFallbackController.swift  请求失败时的系统语音回退
 worker/
   local-server.mjs               本地代理
   src/index.ts                   Cloudflare Worker

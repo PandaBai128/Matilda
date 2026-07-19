@@ -3,8 +3,8 @@
 //  leanring-buddy
 //
 //  System-wide transparent overlay window for the companion avatar.
-//  One OverlayWindow is created per screen so the companion
-//  seamlessly follows the cursor across multiple monitors.
+//  One OverlayWindow is created per screen. All windows share one
+//  event-driven cursor tracker so inactive displays do no recurring work.
 //
 
 import AppKit
@@ -69,21 +69,6 @@ enum BuddyNavigationMode: Equatable {
     case pointingAtTarget
 }
 
-enum CompanionAutoHidePolicy {
-    static func shouldHide(
-        isEnabled: Bool,
-        secondsSinceLastMouseMovement: TimeInterval,
-        delaySeconds: TimeInterval,
-        isInteractionActive: Bool,
-        isFollowingCursor: Bool
-    ) -> Bool {
-        isEnabled
-            && !isInteractionActive
-            && isFollowingCursor
-            && secondsSinceLastMouseMovement >= delaySeconds
-    }
-}
-
 enum ZhuangzhuangExpressionTiming {
     static let barkCycleDurationSeconds: TimeInterval = 1.45
 
@@ -137,33 +122,29 @@ enum ZhuangzhuangExpressionTiming {
 struct BlueCursorView: View {
     let screenFrame: CGRect
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var cursorTracker: CompanionCursorTracker
 
     @State private var cursorPosition: CGPoint
-    @State private var isCursorOnThisScreen: Bool
-    @State private var previousMouseLocation: CGPoint
-    @State private var lastMouseMovementDate: Date
-    @State private var isHiddenForMouseInactivity = false
-    @State private var configuredFollowResponse: CompanionFollowResponse
 
-    init(screenFrame: CGRect, companionManager: CompanionManager) {
+    init(
+        screenFrame: CGRect,
+        companionManager: CompanionManager,
+        cursorTracker: CompanionCursorTracker
+    ) {
         self.screenFrame = screenFrame
         self.companionManager = companionManager
+        self.cursorTracker = cursorTracker
 
         // Seed the cursor position from the current mouse location so the
         // buddy doesn't flash at (0,0) before onAppear fires.
-        let mouseLocation = NSEvent.mouseLocation
+        let mouseLocation = cursorTracker.renderedMouseLocation
         let localX = mouseLocation.x - screenFrame.origin.x
         let localY = screenFrame.height - (mouseLocation.y - screenFrame.origin.y)
         let cursorOffset = companionManager.companionCursorDistance.cursorOffset(
             for: companionManager.companionAvatarSize
         )
         _cursorPosition = State(initialValue: CGPoint(x: localX + cursorOffset.x, y: localY + cursorOffset.y))
-        _isCursorOnThisScreen = State(initialValue: screenFrame.contains(mouseLocation))
-        _previousMouseLocation = State(initialValue: mouseLocation)
-        _lastMouseMovementDate = State(initialValue: Date())
-        _configuredFollowResponse = State(initialValue: companionManager.companionFollowResponse)
     }
-    @State private var timer: Timer?
     @State private var cursorOpacity: Double = 0.0
 
     // MARK: - Buddy Navigation State
@@ -205,8 +186,7 @@ struct BlueCursorView: View {
 
     var body: some View {
         ZStack {
-            // Nearly transparent background (helps with compositing)
-            Color.black.opacity(0.001)
+            Color.clear
 
             if buddyNavigationMode == .pointingAtTarget,
                let pointingTargetPosition {
@@ -259,31 +239,31 @@ struct BlueCursorView: View {
                     }
             }
 
-            // Expression frames were derived from the approved portrait and only
-            // change the eyes or mouth. The surrounding face remains visually fixed.
-            ZhuangzhuangAvatarView(
-                diameter: companionManager.companionAvatarSize.diameter,
-                voiceState: companionManager.voiceState,
-                navigationMode: buddyNavigationMode,
-                audioPowerLevel: companionManager.currentAudioPowerLevel,
-                travelTiltDegrees: buddyTravelTiltDegrees,
-                glowColor: companionManager.companionGlowColor,
-                glowIntensity: companionManager.companionGlowIntensity,
-                isGlowEnabled: companionManager.isCompanionGlowEnabled
-            )
+            if buddyIsVisibleOnThisScreen {
+                // Removing this subtree stops its TimelineView completely after
+                // auto-hide or when another display becomes active.
+                ZhuangzhuangAvatarView(
+                    diameter: companionManager.companionAvatarSize.diameter,
+                    voiceState: companionManager.voiceState,
+                    navigationMode: buddyNavigationMode,
+                    audioPowerLevel: companionManager.currentAudioPowerLevel,
+                    travelTiltDegrees: buddyTravelTiltDegrees,
+                    glowColor: companionManager.companionGlowColor,
+                    glowIntensity: companionManager.companionGlowIntensity,
+                    isGlowEnabled: companionManager.isCompanionGlowEnabled
+                )
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen ? cursorOpacity : 0)
+                .opacity(cursorOpacity)
                 .position(cursorPosition)
+                .transition(.opacity)
                 .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
+            }
 
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
         .ignoresSafeArea()
         .onAppear {
-            // Set initial cursor position immediately before starting animation
-            let mouseLocation = NSEvent.mouseLocation
-            isCursorOnThisScreen = screenFrame.contains(mouseLocation)
-
+            let mouseLocation = cursorTracker.renderedMouseLocation
             let swiftUIPosition = convertScreenPointToSwiftUICoordinates(mouseLocation)
             let cursorOffset = currentCursorOffset
             self.cursorPosition = CGPoint(
@@ -291,42 +271,35 @@ struct BlueCursorView: View {
                 y: swiftUIPosition.y + cursorOffset.y
             )
 
-            startTrackingCursor()
-
             self.cursorOpacity = 1.0
         }
         .onDisappear {
-            timer?.invalidate()
             navigationAnimationTimer?.invalidate()
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
-            clickyDebugLog("overlay point-change screen=\(screenFrame) newLocation=\(String(describing: newLocation)) displayFrame=\(String(describing: companionManager.detectedElementDisplayFrame))")
             // When a UI element location is detected, navigate the buddy to
             // that position so it points at the element.
             guard let screenLocation = newLocation,
                   let displayFrame = companionManager.detectedElementDisplayFrame else {
-                clickyDebugLog("overlay point-change ignored missing-target screen=\(screenFrame)")
                 return
             }
 
             // Only navigate if the target is on THIS screen
             guard screenFrame.contains(CGPoint(x: displayFrame.midX, y: displayFrame.midY))
                   || displayFrame == screenFrame else {
-                clickyDebugLog("overlay point-change ignored different-screen screen=\(screenFrame) displayFrame=\(displayFrame)")
                 return
             }
 
             startNavigatingToElement(screenLocation: screenLocation)
         }
-        .onChange(of: companionManager.voiceState) { newVoiceState in
-            if newVoiceState != .idle {
-                lastMouseMovementDate = Date()
-                setMouseInactivityHidden(false)
-            }
+        .onChange(of: cursorTracker.renderedMouseLocation) { _, newMouseLocation in
+            handleTrackedMouseLocation(newMouseLocation)
         }
-        .onChange(of: companionManager.companionFollowResponse) { newFollowResponse in
-            configuredFollowResponse = newFollowResponse
+        .onChange(of: cursorTracker.activeScreenFrame) { _, newActiveScreenFrame in
+            guard newActiveScreenFrame == screenFrame else { return }
+            handleTrackedMouseLocation(cursorTracker.renderedMouseLocation)
         }
+        .animation(.easeInOut(duration: 0.24), value: buddyIsVisibleOnThisScreen)
     }
 
     /// Whether the buddy avatar should be visible on this screen.
@@ -343,7 +316,8 @@ struct BlueCursorView: View {
             if companionManager.detectedElementScreenLocation != nil {
                 return false
             }
-            return isCursorOnThisScreen && !isHiddenForMouseInactivity
+            return cursorTracker.activeScreenFrame == screenFrame
+                && !cursorTracker.isHiddenForInactivity
         case .navigatingToTarget, .pointingAtTarget:
             return true
         }
@@ -351,49 +325,28 @@ struct BlueCursorView: View {
 
     // MARK: - Cursor Tracking
 
-    private func startTrackingCursor() {
-        let frameDurationSeconds = 1.0 / 60.0
-        timer = Timer.scheduledTimer(withTimeInterval: frameDurationSeconds, repeats: true) { _ in
-            let mouseLocation = NSEvent.mouseLocation
-            self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
-            self.updateMouseActivity(mouseLocation: mouseLocation, currentDate: Date())
-
-            // During forward flight or pointing, the buddy is NOT interrupted by
-            // mouse movement — it completes its full animation and return flight.
-            // Only during the RETURN flight do we allow cursor movement to cancel
-            // (so the buddy snaps to following if the user moves while it's flying back).
-            if self.buddyNavigationMode == .navigatingToTarget && self.isReturningToCursor {
-                let currentMouseInSwiftUI = self.convertScreenPointToSwiftUICoordinates(mouseLocation)
-                let distanceFromNavigationStart = hypot(
-                    currentMouseInSwiftUI.x - self.cursorPositionWhenNavigationStarted.x,
-                    currentMouseInSwiftUI.y - self.cursorPositionWhenNavigationStarted.y
-                )
-                if distanceFromNavigationStart > 100 {
-                    cancelNavigationAndResumeFollowing()
-                }
-                return
+    private func handleTrackedMouseLocation(_ mouseLocation: CGPoint) {
+        if buddyNavigationMode == .navigatingToTarget && isReturningToCursor {
+            let currentMouseInSwiftUI = convertScreenPointToSwiftUICoordinates(mouseLocation)
+            let distanceFromNavigationStart = hypot(
+                currentMouseInSwiftUI.x - cursorPositionWhenNavigationStarted.x,
+                currentMouseInSwiftUI.y - cursorPositionWhenNavigationStarted.y
+            )
+            if distanceFromNavigationStart > 100 {
+                cancelNavigationAndResumeFollowing()
             }
-
-            // During forward navigation or pointing, just skip cursor tracking
-            if self.buddyNavigationMode != .followingCursor {
-                return
-            }
-
-            // Normal cursor following
-            let swiftUIPosition = self.convertScreenPointToSwiftUICoordinates(mouseLocation)
-            let cursorOffset = self.currentCursorOffset
-            let desiredCursorPosition = CGPoint(
-                x: swiftUIPosition.x + cursorOffset.x,
-                y: swiftUIPosition.y + cursorOffset.y
-            )
-            let smoothingFraction = self.configuredFollowResponse.smoothingFraction(
-                frameDurationSeconds: frameDurationSeconds
-            )
-            self.cursorPosition = CGPoint(
-                x: self.cursorPosition.x + (desiredCursorPosition.x - self.cursorPosition.x) * smoothingFraction,
-                y: self.cursorPosition.y + (desiredCursorPosition.y - self.cursorPosition.y) * smoothingFraction
-            )
+            return
         }
+
+        guard buddyNavigationMode == .followingCursor,
+              cursorTracker.activeScreenFrame == screenFrame else { return }
+
+        let swiftUIPosition = convertScreenPointToSwiftUICoordinates(mouseLocation)
+        let cursorOffset = currentCursorOffset
+        cursorPosition = CGPoint(
+            x: swiftUIPosition.x + cursorOffset.x,
+            y: swiftUIPosition.y + cursorOffset.y
+        )
     }
 
     private var currentCursorOffset: CGPoint {
@@ -402,70 +355,33 @@ struct BlueCursorView: View {
         )
     }
 
-    private func updateMouseActivity(mouseLocation: CGPoint, currentDate: Date) {
-        let movementDistance = hypot(
-            mouseLocation.x - previousMouseLocation.x,
-            mouseLocation.y - previousMouseLocation.y
-        )
-
-        if movementDistance >= 0.5 {
-            previousMouseLocation = mouseLocation
-            lastMouseMovementDate = currentDate
-            setMouseInactivityHidden(false)
-            return
-        }
-
-        let shouldHideForInactivity = CompanionAutoHidePolicy.shouldHide(
-            isEnabled: companionManager.isCompanionAutoHideEnabled,
-            secondsSinceLastMouseMovement: currentDate.timeIntervalSince(lastMouseMovementDate),
-            delaySeconds: companionManager.companionAutoHideDelaySeconds,
-            isInteractionActive: companionManager.voiceState != .idle,
-            isFollowingCursor: buddyNavigationMode == .followingCursor
-        )
-        setMouseInactivityHidden(shouldHideForInactivity)
-    }
-
-    private func setMouseInactivityHidden(_ shouldHide: Bool) {
-        guard shouldHide != isHiddenForMouseInactivity else { return }
-        withAnimation(.easeInOut(duration: shouldHide ? 0.3 : 0.16)) {
-            isHiddenForMouseInactivity = shouldHide
-        }
-    }
-
     /// Converts a macOS screen point (AppKit, bottom-left origin) to SwiftUI
     /// coordinates (top-left origin) relative to this screen's overlay window.
     private func convertScreenPointToSwiftUICoordinates(_ screenPoint: CGPoint) -> CGPoint {
-        let x = screenPoint.x - screenFrame.origin.x
-        let y = (screenFrame.origin.y + screenFrame.height) - screenPoint.y
-        return CGPoint(x: x, y: y)
+        CompanionOverlayGeometry.localPoint(
+            forGlobalScreenPoint: screenPoint,
+            screenFrame: screenFrame
+        )
     }
 
     // MARK: - Element Navigation
 
     /// Starts animating the buddy toward a detected UI element location.
     private func startNavigatingToElement(screenLocation: CGPoint) {
-        setMouseInactivityHidden(false)
         // Convert the AppKit screen location to SwiftUI coordinates for this screen
         let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
 
-        // Keep the exact model coordinate visible as a pulse marker, while the
-        // larger portrait stops beside it instead of covering the control.
-        let markerPosition = CGPoint(
-            x: max(10, min(targetInSwiftUI.x, screenFrame.width - 10)),
-            y: max(10, min(targetInSwiftUI.y, screenFrame.height - 10))
-        )
+        // The marker center is the model coordinate exactly. The ring may crop at
+        // an edge, but the center dot must never report a shifted location.
+        let markerPosition = targetInSwiftUI
         pointingTargetPosition = markerPosition
 
         let avatarDiameter = companionManager.companionAvatarSize.diameter
-        let avatarDestination = CGPoint(
-            x: markerPosition.x + max(18, avatarDiameter * 0.82),
-            y: markerPosition.y - max(16, avatarDiameter * 0.68)
+        let clampedTarget = CompanionOverlayGeometry.clampedAvatarDestination(
+            beside: markerPosition,
+            avatarDiameter: avatarDiameter,
+            screenSize: screenFrame.size
         )
-        let clampedTarget = CGPoint(
-            x: max(avatarDiameter / 2, min(avatarDestination.x, screenFrame.width - avatarDiameter / 2)),
-            y: max(avatarDiameter / 2, min(avatarDestination.y, screenFrame.height - avatarDiameter / 2))
-        )
-        clickyDebugLog("overlay navigate start screenLocation=\(screenLocation) target=\(targetInSwiftUI) clamped=\(clampedTarget) screen=\(screenFrame)")
 
         // Record the current cursor position so we can detect if the user
         // moves the mouse enough to cancel the return flight
@@ -502,7 +418,7 @@ struct BlueCursorView: View {
         // Flight duration scales with distance: short hops are quick, long
         // flights are more dramatic. Clamped to 0.6s–1.4s.
         let flightDurationSeconds = min(max(distance / 800.0, 0.6), 1.4)
-        let frameInterval: Double = 1.0 / 60.0
+        let frameInterval: Double = 1.0 / 30.0
         let totalFrames = Int(flightDurationSeconds / frameInterval)
         var currentFrame = 0
 
@@ -663,7 +579,6 @@ struct BlueCursorView: View {
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
         companionManager.clearDetectedElementLocation()
-        lastMouseMovementDate = Date()
     }
 
 }
@@ -681,74 +596,143 @@ struct ZhuangzhuangAvatarView: View {
     let isGlowEnabled: Bool
     var blinkCycleDurationSeconds: Double = 5.8
     @State private var expressionStateStartTime = Date().timeIntervalSinceReferenceDate
+    @State private var isLowPowerBlinkVisible = false
+    @State private var lowPowerBlinkTask: Task<Void, Never>?
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timelineContext in
-            let animationTime = timelineContext.date.timeIntervalSinceReferenceDate
-            let portraitRotation = rotationDegrees(at: animationTime)
-            let portraitScale = scale(at: animationTime)
-            let portraitOffset = offset(at: animationTime)
-            let blinkProgress = blinkProgress(at: animationTime)
-            let barkProgress = barkProgress(at: animationTime)
-
-            ZStack {
-                Image("ZhuangzhuangHead")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: diameter, height: diameter)
-
-                if blinkProgress > 0 {
-                    Image("ZhuangzhuangHeadClosedEyes")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: diameter, height: diameter)
-                        .opacity(blinkProgress)
-                }
-
-                if barkProgress > 0 {
-                    Image("ZhuangzhuangHeadBark")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: diameter, height: diameter)
-                        .opacity(barkProgress)
-                }
-
-                if voiceState == .listening {
-                    BlueCursorWaveformView(
-                        audioPowerLevel: audioPowerLevel,
-                        accentColor: glowColor
-                    )
-                        .offset(x: diameter * 0.72, y: diameter * 0.08)
-                }
-
-                if voiceState == .processing {
-                    ZhuangzhuangThinkingDotsView(
-                        diameter: diameter,
-                        animationTime: animationTime,
-                        accentColor: glowColor
+        let framesPerSecond = CompanionAnimationCadencePolicy.framesPerSecond(
+            voiceState: voiceState,
+            navigationMode: navigationMode
+        )
+        Group {
+            if let framesPerSecond {
+                TimelineView(.periodic(from: .now, by: 1.0 / framesPerSecond)) { timelineContext in
+                    animatedAvatarFrame(
+                        animationTime: timelineContext.date.timeIntervalSinceReferenceDate
                     )
                 }
-
+            } else {
+                lowPowerAvatarFrame
             }
-            .frame(width: diameter, height: diameter)
-            .rotationEffect(.degrees(portraitRotation))
-            .scaleEffect(portraitScale)
-            .offset(portraitOffset)
-            .shadow(
-                color: glowColor.opacity(glowOpacity),
-                radius: navigationMode == .navigatingToTarget ? diameter * 0.36 : diameter * 0.22,
-                x: 0,
-                y: 0
-            )
+        }
+        .onAppear { refreshLowPowerBlinkTask() }
+        .onDisappear {
+            lowPowerBlinkTask?.cancel()
+            lowPowerBlinkTask = nil
         }
         .onChange(of: navigationMode) { _, _ in
             expressionStateStartTime = Date().timeIntervalSinceReferenceDate
+            refreshLowPowerBlinkTask()
         }
         .onChange(of: voiceState) { _, _ in
             expressionStateStartTime = Date().timeIntervalSinceReferenceDate
+            refreshLowPowerBlinkTask()
         }
         .onChange(of: blinkCycleDurationSeconds) { _, _ in
             expressionStateStartTime = Date().timeIntervalSinceReferenceDate
+            refreshLowPowerBlinkTask()
+        }
+    }
+
+    @ViewBuilder
+    private func animatedAvatarFrame(animationTime: TimeInterval) -> some View {
+        avatarImageStack(
+            animationTime: animationTime,
+            blinkProgress: blinkProgress(at: animationTime),
+            barkProgress: barkProgress(at: animationTime)
+        )
+        .rotationEffect(.degrees(rotationDegrees(at: animationTime)))
+        .scaleEffect(scale(at: animationTime))
+        .offset(offset(at: animationTime))
+    }
+
+    private var lowPowerAvatarFrame: some View {
+        avatarImageStack(
+            animationTime: expressionStateStartTime,
+            blinkProgress: isLowPowerBlinkVisible ? 1 : 0,
+            barkProgress: 0
+        )
+    }
+
+    @ViewBuilder
+    private func avatarImageStack(
+        animationTime: TimeInterval,
+        blinkProgress: CGFloat,
+        barkProgress: CGFloat
+    ) -> some View {
+        ZStack {
+            Image("ZhuangzhuangHead")
+                .resizable()
+                .scaledToFit()
+                .frame(width: diameter, height: diameter)
+
+            if blinkProgress > 0 {
+                Image("ZhuangzhuangHeadClosedEyes")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: diameter, height: diameter)
+                    .opacity(blinkProgress)
+            }
+
+            if barkProgress > 0 {
+                Image("ZhuangzhuangHeadBark")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: diameter, height: diameter)
+                    .opacity(barkProgress)
+            }
+
+            if voiceState == .listening {
+                BlueCursorWaveformView(
+                    audioPowerLevel: audioPowerLevel,
+                    accentColor: glowColor,
+                    animationTime: animationTime
+                )
+                .offset(x: diameter * 0.72, y: diameter * 0.08)
+            }
+
+            if voiceState == .processing {
+                ZhuangzhuangThinkingDotsView(
+                    diameter: diameter,
+                    animationTime: animationTime,
+                    accentColor: glowColor
+                )
+            }
+        }
+        .frame(width: diameter, height: diameter)
+        .shadow(
+            color: glowColor.opacity(glowOpacity),
+            radius: navigationMode == .navigatingToTarget ? diameter * 0.36 : diameter * 0.22,
+            x: 0,
+            y: 0
+        )
+    }
+
+    private func refreshLowPowerBlinkTask() {
+        lowPowerBlinkTask?.cancel()
+        lowPowerBlinkTask = nil
+        isLowPowerBlinkVisible = false
+
+        guard CompanionAnimationCadencePolicy.framesPerSecond(
+            voiceState: voiceState,
+            navigationMode: navigationMode
+        ) == nil else { return }
+
+        lowPowerBlinkTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(
+                    nanoseconds: UInt64(blinkCycleDurationSeconds * 1_000_000_000)
+                )
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.10)) {
+                    isLowPowerBlinkVisible = true
+                }
+                try? await Task.sleep(nanoseconds: 170_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    isLowPowerBlinkVisible = false
+                }
+            }
         }
     }
 
@@ -847,7 +831,7 @@ struct ZhuangzhuangTargetMarkerView: View {
     let showsCenterDot: Bool
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { timelineContext in
+        TimelineView(.periodic(from: .now, by: 1.0 / 12.0)) { timelineContext in
             let phase = CGFloat((sin(timelineContext.date.timeIntervalSinceReferenceDate * 4.0) + 1) / 2)
             ZStack {
                 Circle()
@@ -879,32 +863,27 @@ struct ZhuangzhuangTargetMarkerView: View {
 private struct BlueCursorWaveformView: View {
     let audioPowerLevel: CGFloat
     let accentColor: Color
+    let animationTime: TimeInterval
 
     private let barCount = 5
     private let listeningBarProfile: [CGFloat] = [0.4, 0.7, 1.0, 0.7, 0.4]
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { timelineContext in
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<barCount, id: \.self) { barIndex in
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(accentColor)
-                        .frame(
-                            width: 2,
-                            height: barHeight(
-                                for: barIndex,
-                                timelineDate: timelineContext.date
-                            )
-                        )
-                }
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<barCount, id: \.self) { barIndex in
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(accentColor)
+                    .frame(
+                        width: 2,
+                        height: barHeight(for: barIndex)
+                    )
             }
-            .shadow(color: accentColor.opacity(0.6), radius: 6, x: 0, y: 0)
-            .animation(.linear(duration: 0.08), value: audioPowerLevel)
         }
+        .shadow(color: accentColor.opacity(0.6), radius: 6, x: 0, y: 0)
     }
 
-    private func barHeight(for barIndex: Int, timelineDate: Date) -> CGFloat {
-        let animationPhase = CGFloat(timelineDate.timeIntervalSinceReferenceDate * 3.6) + CGFloat(barIndex) * 0.35
+    private func barHeight(for barIndex: Int) -> CGFloat {
+        let animationPhase = CGFloat(animationTime * 3.6) + CGFloat(barIndex) * 0.35
         let normalizedAudioPowerLevel = max(audioPowerLevel - 0.008, 0)
         let easedAudioPowerLevel = pow(min(normalizedAudioPowerLevel * 2.85, 1), 0.76)
         let reactiveHeight = easedAudioPowerLevel * 10 * listeningBarProfile[barIndex]
@@ -918,10 +897,17 @@ private struct BlueCursorWaveformView: View {
 @MainActor
 class OverlayWindowManager {
     private var overlayWindows: [OverlayWindow] = []
+    private var cursorTracker: CompanionCursorTracker?
 
     func showOverlay(onScreens screens: [NSScreen], companionManager: CompanionManager) {
         // Hide any existing overlays
         hideOverlay()
+
+        let cursorTracker = CompanionCursorTracker(
+            screenFrames: screens.map(\.frame),
+            companionManager: companionManager
+        )
+        self.cursorTracker = cursorTracker
 
         // Create one overlay window per screen
         for screen in screens {
@@ -929,7 +915,8 @@ class OverlayWindowManager {
 
             let contentView = BlueCursorView(
                 screenFrame: screen.frame,
-                companionManager: companionManager
+                companionManager: companionManager,
+                cursorTracker: cursorTracker
             )
 
             let hostingView = NSHostingView(rootView: contentView)
@@ -942,6 +929,8 @@ class OverlayWindowManager {
     }
 
     func hideOverlay() {
+        cursorTracker?.stop()
+        cursorTracker = nil
         for window in overlayWindows {
             window.orderOut(nil)
             window.contentView = nil
@@ -951,6 +940,8 @@ class OverlayWindowManager {
 
     /// Fades out overlay windows over `duration` seconds, then removes them.
     func fadeOutAndHideOverlay(duration: TimeInterval = 0.4) {
+        cursorTracker?.stop()
+        cursorTracker = nil
         let windowsToFade = overlayWindows
         overlayWindows.removeAll()
 

@@ -29,15 +29,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     }
 
     func start() {
-        // If the event tap is already running, don't restart it.
-        // Restarting resets isShortcutCurrentlyPressed, which would kill
-        // the waveform overlay mid-press when the permission poller calls
-        // refreshAllPermissions → start() every few seconds.
+        // If the event tap is already running, don't restart it or reset an
+        // in-progress modifier-only shortcut transition.
         guard globalEventTap == nil else {
-            clickyDebugLog("global-monitor already-running")
+            matildaDebugLog("global monitor already running")
             return
         }
-        clickyDebugLog("global-monitor start-requested")
+        matildaDebugLog("global monitor start requested")
 
         let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
@@ -67,7 +65,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             callback: eventTapCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            clickyDebugLog("global-monitor tap-create-failed")
+            matildaDebugLog("global monitor tap creation failed")
             print("⚠️ Global push-to-talk: couldn't create CGEvent tap")
             return
         }
@@ -78,7 +76,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             0
         ) else {
             CFMachPortInvalidate(globalEventTap)
-            clickyDebugLog("global-monitor run-loop-source-failed")
+            matildaDebugLog("global monitor run loop source failed")
             print("⚠️ Global push-to-talk: couldn't create event tap run loop source")
             return
         }
@@ -89,12 +87,12 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         CFRunLoopAddSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
         CGEvent.tapEnable(tap: globalEventTap, enable: true)
         startModifierPollingFallback()
-        clickyDebugLog("global-monitor started")
+        matildaDebugLog("global monitor started")
     }
 
     func stop() {
         if globalEventTap != nil || globalEventTapRunLoopSource != nil {
-            clickyDebugLog("global-monitor stopped")
+            matildaDebugLog("global monitor stopped")
         }
         isShortcutCurrentlyPressed = false
 
@@ -117,7 +115,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         if eventType == .tapDisabledByTimeout || eventType == .tapDisabledByUserInput {
-            clickyDebugLog("global-monitor tap-disabled eventType=\(eventType.rawValue) re-enabling")
+            matildaDebugLog("global monitor tap re-enabled")
             if let globalEventTap {
                 CGEvent.tapEnable(tap: globalEventTap, enable: true)
             }
@@ -137,11 +135,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             break
         case .pressed:
             isShortcutCurrentlyPressed = true
-            clickyDebugLog("global-monitor transition=pressed keyCode=\(eventKeyCode) flags=\(event.flags.rawValue)")
+            matildaDebugLog("global shortcut pressed")
             shortcutTransitionPublisher.send(.pressed)
         case .released:
             isShortcutCurrentlyPressed = false
-            clickyDebugLog("global-monitor transition=released keyCode=\(eventKeyCode) flags=\(event.flags.rawValue)")
+            matildaDebugLog("global shortcut released")
             shortcutTransitionPublisher.send(.released)
         }
 
@@ -166,13 +164,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         if isShortcutPressed && !isShortcutCurrentlyPressed {
             isShortcutCurrentlyPressed = true
-            clickyDebugLog("global-monitor polling-transition=pressed flags=\(flags.rawValue)")
+            matildaDebugLog("global shortcut fallback detected press")
             shortcutTransitionPublisher.send(.pressed)
         }
 
         if !isShortcutPressed && isShortcutCurrentlyPressed {
             isShortcutCurrentlyPressed = false
-            clickyDebugLog("global-monitor polling-transition=released flags=\(flags.rawValue)")
+            matildaDebugLog("global shortcut fallback detected release")
             shortcutTransitionPublisher.send(.released)
         }
     }

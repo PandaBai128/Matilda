@@ -10,37 +10,18 @@
 import AVFoundation
 import Combine
 import Foundation
+import OSLog
 import ScreenCaptureKit
 import SwiftUI
 
-func clickyDebugLog(_ message: String) {
-    let line = "[DEBUG-PTT] \(Date()) \(message)\n"
-    print(line, terminator: "")
-    guard let data = line.data(using: .utf8) else { return }
+#if DEBUG
+private let matildaDebugLogger = Logger(subsystem: "com.nathan.clicky", category: "runtime")
+#endif
 
-    let logURL = URL(fileURLWithPath: "/tmp/clicky-debug.log")
-    if !FileManager.default.fileExists(atPath: logURL.path) {
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-    }
-
-    do {
-        let handle = try FileHandle(forWritingTo: logURL)
-        try handle.seekToEnd()
-        try handle.write(contentsOf: data)
-        try handle.close()
-    } catch {
-        print("[DEBUG-PTT] failed to write debug log: \(error)")
-    }
-}
-
-func clickyDebugSnippet(_ text: String, limit: Int = 240) -> String {
-    let normalizedText = text
-        .replacingOccurrences(of: "\n", with: " ")
-        .replacingOccurrences(of: "\r", with: " ")
-    if normalizedText.count <= limit {
-        return normalizedText
-    }
-    return String(normalizedText.prefix(limit)) + "..."
+func matildaDebugLog(_ message: @autoclosure @escaping () -> String) {
+#if DEBUG
+    matildaDebugLogger.debug("\(message(), privacy: .private(mask: .hash))")
+#endif
 }
 
 enum CompanionVoiceState {
@@ -184,7 +165,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenContentPermission = false
 
     /// Screen location (global AppKit coords) of a detected UI element the
-    /// buddy should fly to and point at. Parsed from Claude's response;
+    /// buddy should fly to and point at. Parsed from MiniMax's response;
     /// observed by BlueCursorView to trigger the flight animation.
     @Published var detectedElementScreenLocation: CGPoint?
     /// The display frame (global AppKit coords) of the screen the detected
@@ -210,9 +191,10 @@ final class CompanionManager: ObservableObject {
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
+    private let systemSpeechFallbackController = SystemSpeechFallbackController()
 
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
+    /// Conversation history so MiniMax remembers prior exchanges within a session.
+    /// Each entry is the user's transcript and MiniMax's response.
     private var conversationHistory: [CompanionConversationExchange] = []
 
     /// The currently running AI response task, if any. Cancelled when the user
@@ -237,7 +219,7 @@ final class CompanionManager: ObservableObject {
         hasAccessibilityPermission && hasScreenRecordingPermission && hasMicrophonePermission && hasScreenContentPermission
     }
 
-    /// Whether the blue cursor overlay is currently visible on screen.
+    /// Whether the companion overlay is currently visible on screen.
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
@@ -532,9 +514,10 @@ final class CompanionManager: ObservableObject {
     private func stopAllSpeechAndCancelPreview() {
         cancelTTSVoicePreview()
         elevenLabsTTSClient.stopPlayback()
+        systemSpeechFallbackController.stop()
     }
 
-    /// User preference for whether the Clicky cursor should be shown.
+    /// User preference for whether the Zhuangzhuang companion should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
     @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
@@ -559,8 +542,7 @@ final class CompanionManager: ObservableObject {
     func start() {
         UserDefaults.standard.removeObject(forKey: "miniMaxTTSEmotion")
         refreshAllPermissions()
-        clickyDebugLog("manager.start accessibility=\(hasAccessibilityPermission) screen=\(hasScreenRecordingPermission) mic=\(hasMicrophonePermission) screenContent=\(hasScreenContentPermission) all=\(allPermissionsGranted)")
-        print("🔑 Matilda start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
+        matildaDebugLog("manager started")
         startPermissionPolling()
         bindVoiceStateObservation()
         bindAudioPowerLevel()
@@ -607,25 +589,24 @@ final class CompanionManager: ObservableObject {
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
 
-        if currentlyHasAccessibility {
-            clickyDebugLog("permissions accessibility=true starting-global-monitor")
-            globalPushToTalkShortcutMonitor.start()
-        } else {
-            clickyDebugLog("permissions accessibility=false stopping-global-monitor")
-            globalPushToTalkShortcutMonitor.stop()
+        if previouslyHadAccessibility != currentlyHasAccessibility {
+            if currentlyHasAccessibility {
+                matildaDebugLog("accessibility granted; starting global shortcut monitor")
+                globalPushToTalkShortcutMonitor.start()
+            } else {
+                matildaDebugLog("accessibility removed; stopping global shortcut monitor")
+                globalPushToTalkShortcutMonitor.stop()
+            }
         }
 
         hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
-        clickyDebugLog("permissions accessibility=\(hasAccessibilityPermission) screen=\(hasScreenRecordingPermission) mic=\(hasMicrophonePermission) screenContent=\(hasScreenContentPermission) all=\(allPermissionsGranted)")
-
-        // Debug: log permission state on changes
         if previouslyHadAccessibility != hasAccessibilityPermission
             || previouslyHadScreenRecording != hasScreenRecordingPermission
             || previouslyHadMicrophone != hasMicrophonePermission {
-            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
+            matildaDebugLog("permission state changed")
         }
 
         // Screen content permission is persisted — once the user has approved the
@@ -755,14 +736,14 @@ final class CompanionManager: ObservableObject {
 
     func togglePanelVoiceInput() {
         if buddyDictationManager.isDictationInProgress || buddyDictationManager.isPreparingToRecord {
-            clickyDebugLog("panel voice-button stop")
+            matildaDebugLog("panel voice button stopped")
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
             return
         }
 
-        clickyDebugLog("panel voice-button start")
+        matildaDebugLog("panel voice button started")
 
         transientHideTask?.cancel()
         transientHideTask = nil
@@ -789,8 +770,7 @@ final class CompanionManager: ObservableObject {
                 },
                 submitDraftText: { [weak self] finalTranscript in
                     self?.lastTranscript = finalTranscript
-                    print("🗣️ Companion received transcript: \(finalTranscript)")
-                    clickyDebugLog("transcript \(clickyDebugSnippet(finalTranscript))")
+                    matildaDebugLog("panel transcript received")
                     self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                 }
             )
@@ -800,7 +780,7 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
-            clickyDebugLog("shortcut pressed dictationInProgress=\(buddyDictationManager.isDictationInProgress)")
+            matildaDebugLog("shortcut pressed")
             guard !buddyDictationManager.isDictationInProgress else { return }
 
             // Cancel any pending transient hide so the overlay stays visible
@@ -834,8 +814,7 @@ final class CompanionManager: ObservableObject {
                     },
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
-                        print("🗣️ Companion received transcript: \(finalTranscript)")
-                        clickyDebugLog("transcript \(clickyDebugSnippet(finalTranscript))")
+                        matildaDebugLog("shortcut transcript received")
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
                 )
@@ -845,7 +824,7 @@ final class CompanionManager: ObservableObject {
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
-            clickyDebugLog("shortcut released")
+            matildaDebugLog("shortcut released")
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -1032,8 +1011,7 @@ final class CompanionManager: ObservableObject {
                 let pointCoordinate = shouldRequestPointing ? parseResult.coordinate : nil
                 let displayText = parseResult.spokenText
                 streamingSpeechSession.finish(finalAccumulatedText: fullResponseText)
-                clickyDebugLog("llm full-response \(clickyDebugSnippet(fullResponseText))")
-                clickyDebugLog("point requested=\(shouldRequestPointing) coordinate=\(String(describing: pointCoordinate)) label=\(parseResult.elementLabel ?? "nil")")
+                matildaDebugLog("model response completed")
 
                 // Pick the screen capture matching MiniMax's screen number,
                 // falling back to the cursor screen if not specified.
@@ -1050,7 +1028,7 @@ final class CompanionManager: ObservableObject {
                     if !isOverlayVisible {
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
-                        clickyDebugLog("point overlay-show-for-target")
+                        matildaDebugLog("pointing overlay shown")
                     }
 
                     let displayFrame = targetScreenCapture.displayFrame
@@ -1061,10 +1039,9 @@ final class CompanionManager: ObservableObject {
 
                     detectedElementDisplayFrame = displayFrame
                     detectedElementScreenLocation = globalLocation
-                    clickyDebugLog("point target screenLocation=\(globalLocation) displayFrame=\(displayFrame) normalized1000=\(pointCoordinate)")
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
+                    matildaDebugLog("pointing target accepted")
                 } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                    matildaDebugLog("response completed without pointing target")
                 }
 
                 // Save the full display response for both the panel history and
@@ -1085,8 +1062,13 @@ final class CompanionManager: ObservableObject {
                 elevenLabsTTSClient.stopPlayback()
             } catch {
                 elevenLabsTTSClient.stopPlayback()
-                print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                if !Task.isCancelled && (error as? URLError)?.code != .cancelled {
+                    print("⚠️ Companion response error: \(error)")
+                    voiceState = .responding
+                    await systemSpeechFallbackController.speak(
+                        CompanionResponseFailureMessage.spokenMessage(for: error)
+                    )
+                }
             }
 
             if !Task.isCancelled {
@@ -1099,7 +1081,7 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// If the cursor is in transient mode (user toggled "Show Clicky" off),
+    /// If the companion is in transient mode (user toggled "Show 壮壮" off),
     /// waits for TTS playback and any pointing animation to finish, then
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
@@ -1127,16 +1109,6 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
         }
-    }
-
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// TTS is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
     }
 
     // MARK: - Point Tag Parsing

@@ -20,7 +20,7 @@ struct VoiceSettingsView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var searchText = ""
     @State private var sourceFilter: VoiceSourceFilter = .all
-    @State private var previewText = "你好，我是 Clicky。这是我的声音效果。"
+    @State private var previewText = "你好，我是壮壮。这是我的声音效果。"
     @State private var hoveredVoiceID: String?
 
     private var filteredVoices: [MiniMaxVoiceOption] {
@@ -75,7 +75,7 @@ struct VoiceSettingsView: View {
                 Text("Voice Settings")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
-                Text("Choose a MiniMax voice and tune how Clicky speaks.")
+                Text("Choose a MiniMax voice and tune how 壮壮 speaks.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
             }
@@ -328,7 +328,7 @@ struct VoiceSettingsView: View {
 
     private var normalizedPreviewText: String {
         let trimmedText = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedText.isEmpty ? "你好，我是 Clicky。" : trimmedText
+        return trimmedText.isEmpty ? "你好，我是壮壮。" : trimmedText
     }
 
     private func settingsLabel(_ text: String) -> some View {
