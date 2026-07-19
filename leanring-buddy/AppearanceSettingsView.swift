@@ -47,6 +47,8 @@ struct AppearanceSettingsView: View {
                     Divider().background(DS.Colors.borderSubtle)
                     visibilityControls
                     Divider().background(DS.Colors.borderSubtle)
+                    pointingControls
+                    Divider().background(DS.Colors.borderSubtle)
                     glowControls
                 }
             }
@@ -86,10 +88,38 @@ struct AppearanceSettingsView: View {
                         for: companionManager.companionAvatarSize
                     )
 
-                    Image(systemName: "cursorarrow")
-                        .font(.system(size: 19, weight: .medium))
-                        .foregroundColor(.white.opacity(0.9))
+                    if previewMode == .pointing {
+                        ZhuangzhuangTargetMarkerView(
+                            diameter: CGFloat(companionManager.companionPointingMarkerDiameter),
+                            markerColor: companionManager.companionPointingMarkerColor,
+                            showsCenterDot: companionManager.isCompanionPointingCenterDotEnabled
+                        )
                         .position(cursorPosition)
+
+                        Text("汪，汪汪")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(companionManager.companionPointingLabelForegroundColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(companionManager.companionPointingLabelBackgroundColor)
+                                    .shadow(
+                                        color: companionManager.companionPointingLabelBackgroundColor.opacity(0.5),
+                                        radius: 6
+                                    )
+                            )
+                            .position(
+                                x: cursorPosition.x + cursorOffset.x + 42,
+                                y: cursorPosition.y + cursorOffset.y
+                                    + (companionManager.companionAvatarSize.diameter / 2) + 12
+                            )
+                    } else {
+                        Image(systemName: "cursorarrow")
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundColor(.white.opacity(0.9))
+                            .position(cursorPosition)
+                    }
 
                     ZhuangzhuangAvatarView(
                         diameter: companionManager.companionAvatarSize.diameter,
@@ -196,6 +226,56 @@ struct AppearanceSettingsView: View {
         }
     }
 
+    private var pointingControls: some View {
+        settingsSection(title: "Pointing") {
+            VStack(spacing: 8) {
+                HStack {
+                    Text("Marker size")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                    Spacer()
+                    Text("\(Int(companionManager.companionPointingMarkerDiameter)) px")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { companionManager.companionPointingMarkerDiameter },
+                        set: { companionManager.setCompanionPointingMarkerDiameter($0) }
+                    ),
+                    in: 20...64,
+                    step: 2
+                )
+                .pointerCursor()
+            }
+
+            settingsToggleRow(
+                title: "Center dot",
+                isOn: Binding(
+                    get: { companionManager.isCompanionPointingCenterDotEnabled },
+                    set: { companionManager.setCompanionPointingCenterDotEnabled($0) }
+                )
+            )
+
+            settingsColorRow(
+                title: "Marker color",
+                selection: Binding(
+                    get: { companionManager.companionPointingMarkerColor },
+                    set: { companionManager.setCompanionPointingMarkerColor($0) }
+                )
+            )
+
+            settingsColorRow(
+                title: "Label color",
+                selection: Binding(
+                    get: { companionManager.companionPointingLabelBackgroundColor },
+                    set: { companionManager.setCompanionPointingLabelBackgroundColor($0) }
+                )
+            )
+        }
+    }
+
     private var glowControls: some View {
         settingsSection(title: "Glow") {
             settingsToggleRow(
@@ -294,6 +374,18 @@ struct AppearanceSettingsView: View {
                 .toggleStyle(.switch)
                 .tint(DS.Colors.accent)
                 .scaleEffect(0.85)
+                .pointerCursor()
+        }
+    }
+
+    private func settingsColorRow(title: String, selection: Binding<Color>) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+            Spacer()
+            ColorPicker(title, selection: selection, supportsOpacity: false)
+                .labelsHidden()
                 .pointerCursor()
         }
     }

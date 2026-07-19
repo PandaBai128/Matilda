@@ -210,8 +210,12 @@ struct BlueCursorView: View {
 
             if buddyNavigationMode == .pointingAtTarget,
                let pointingTargetPosition {
-                ZhuangzhuangTargetMarkerView()
-                    .position(pointingTargetPosition)
+                ZhuangzhuangTargetMarkerView(
+                    diameter: CGFloat(companionManager.companionPointingMarkerDiameter),
+                    markerColor: companionManager.companionPointingMarkerColor,
+                    showsCenterDot: companionManager.isCompanionPointingCenterDotEnabled
+                )
+                .position(pointingTargetPosition)
             }
 
             // Navigation pointer bubble — shown when buddy arrives at a detected element.
@@ -220,14 +224,16 @@ struct BlueCursorView: View {
             if buddyNavigationMode == .pointingAtTarget && !navigationBubbleText.isEmpty {
                 Text(navigationBubbleText)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white)
+                    .foregroundColor(companionManager.companionPointingLabelForegroundColor)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
+                            .fill(companionManager.companionPointingLabelBackgroundColor)
                             .shadow(
-                                color: DS.Colors.overlayCursorBlue.opacity(0.5 + (1.0 - navigationBubbleScale) * 1.0),
+                                color: companionManager.companionPointingLabelBackgroundColor.opacity(
+                                    0.5 + (1.0 - navigationBubbleScale) * 1.0
+                                ),
                                 radius: 6 + (1.0 - navigationBubbleScale) * 16,
                                 x: 0, y: 0
                             )
@@ -835,21 +841,34 @@ private struct ZhuangzhuangThinkingDotsView: View {
     }
 }
 
-private struct ZhuangzhuangTargetMarkerView: View {
+struct ZhuangzhuangTargetMarkerView: View {
+    let diameter: CGFloat
+    let markerColor: Color
+    let showsCenterDot: Bool
+
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { timelineContext in
             let phase = CGFloat((sin(timelineContext.date.timeIntervalSinceReferenceDate * 4.0) + 1) / 2)
             ZStack {
                 Circle()
-                    .stroke(DS.Colors.overlayCursorBlue.opacity(Double(0.78 - phase * 0.38)), lineWidth: 1.5)
-                    .frame(width: 15, height: 15)
-                    .scaleEffect(0.72 + phase * 0.48)
+                    .stroke(
+                        markerColor.opacity(Double(0.82 - phase * 0.34)),
+                        lineWidth: max(1.5, diameter * 0.055)
+                    )
+                    .frame(width: diameter, height: diameter)
+                    .scaleEffect(0.82 + phase * 0.28)
 
-                Circle()
-                    .fill(DS.Colors.overlayCursorBlue)
-                    .frame(width: 4, height: 4)
+                if showsCenterDot {
+                    Circle()
+                        .fill(markerColor)
+                        .frame(
+                            width: max(4, diameter * 0.16),
+                            height: max(4, diameter * 0.16)
+                        )
+                }
             }
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.72), radius: 5)
+            .frame(width: diameter * 1.12, height: diameter * 1.12)
+            .shadow(color: markerColor.opacity(0.68), radius: diameter * 0.22)
         }
     }
 }

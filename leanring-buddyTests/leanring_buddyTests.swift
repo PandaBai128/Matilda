@@ -263,22 +263,27 @@ struct leanring_buddyTests {
         #expect(cursorOffset == CGPoint(x: 35, y: 25))
     }
 
-    @Test func followResponseModesHaveIncreasingLag() async throws {
+    @Test func followResponseModesMatchTheRequestedSpeedRemapping() async throws {
         let frameDurationSeconds = 1.0 / 60.0
-        let quickFraction = CompanionFollowResponse.quick.smoothingFraction(
+        let fastFraction = CompanionFollowResponse.quick.smoothingFraction(
             frameDurationSeconds: frameDurationSeconds
         )
-        let naturalFraction = CompanionFollowResponse.natural.smoothingFraction(
+        let mediumFraction = CompanionFollowResponse.natural.smoothingFraction(
             frameDurationSeconds: frameDurationSeconds
         )
-        let relaxedFraction = CompanionFollowResponse.relaxed.smoothingFraction(
+        let slowFraction = CompanionFollowResponse.relaxed.smoothingFraction(
             frameDurationSeconds: frameDurationSeconds
         )
 
-        #expect(quickFraction > naturalFraction)
-        #expect(naturalFraction > relaxedFraction)
-        #expect(relaxedFraction > 0)
-        #expect(quickFraction < 1)
+        let previousFastFraction = CGFloat(1 - exp(-frameDurationSeconds / 0.12))
+        let previousMediumFraction = CGFloat(1 - exp(-frameDurationSeconds / 0.22))
+
+        #expect(CompanionFollowResponse.quick.displayName == "Fast")
+        #expect(CompanionFollowResponse.natural.displayName == "Medium")
+        #expect(CompanionFollowResponse.relaxed.displayName == "Slow")
+        #expect(fastFraction == 1)
+        #expect(abs(mediumFraction - previousFastFraction) < 0.000_001)
+        #expect(abs(slowFraction - previousMediumFraction) < 0.000_001)
     }
 
     @Test func companionAutoHideWaitsForIdleFollowTimeout() async throws {

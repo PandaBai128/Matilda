@@ -131,22 +131,23 @@ enum CompanionFollowResponse: String, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .quick: return "Quick"
-        case .natural: return "Natural"
-        case .relaxed: return "Relaxed"
+        case .quick: return "Fast"
+        case .natural: return "Medium"
+        case .relaxed: return "Slow"
         }
     }
 
-    private var responseTimeSeconds: Double {
+    private var responseTimeSeconds: Double? {
         switch self {
-        case .quick: return 0.12
-        case .natural: return 0.22
-        case .relaxed: return 0.35
+        case .quick: return nil
+        case .natural: return 0.12
+        case .relaxed: return 0.22
         }
     }
 
     func smoothingFraction(frameDurationSeconds: Double) -> CGFloat {
-        CGFloat(1 - exp(-frameDurationSeconds / responseTimeSeconds))
+        guard let responseTimeSeconds else { return 1 }
+        return CGFloat(1 - exp(-frameDurationSeconds / responseTimeSeconds))
     }
 }
 
@@ -294,9 +295,42 @@ final class CompanionManager: ObservableObject {
         }
         return min(max(UserDefaults.standard.double(forKey: "zhuangzhuangAutoHideDelaySeconds"), 2), 30)
     }()
+    @Published private(set) var companionPointingMarkerDiameter: Double = {
+        guard UserDefaults.standard.object(forKey: "zhuangzhuangPointingMarkerDiameter") != nil else { return 32 }
+        return min(max(UserDefaults.standard.double(forKey: "zhuangzhuangPointingMarkerDiameter"), 20), 64)
+    }()
+    @Published private(set) var isCompanionPointingCenterDotEnabled: Bool = UserDefaults.standard.object(
+        forKey: "zhuangzhuangPointingCenterDotEnabled"
+    ) == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "zhuangzhuangPointingCenterDotEnabled")
+    @Published private(set) var companionPointingMarkerColorHex: String = UserDefaults.standard.string(
+        forKey: "zhuangzhuangPointingMarkerColorHex"
+    ) ?? "#3380FF"
+    @Published private(set) var companionPointingLabelBackgroundColorHex: String = UserDefaults.standard.string(
+        forKey: "zhuangzhuangPointingLabelBackgroundColorHex"
+    ) ?? "#3380FF"
 
     var companionGlowColor: Color {
         Color(hex: companionGlowColorHex)
+    }
+
+    var companionPointingMarkerColor: Color {
+        Color(hex: companionPointingMarkerColorHex)
+    }
+
+    var companionPointingLabelBackgroundColor: Color {
+        Color(hex: companionPointingLabelBackgroundColorHex)
+    }
+
+    var companionPointingLabelForegroundColor: Color {
+        guard let sRGBColor = NSColor(companionPointingLabelBackgroundColor).usingColorSpace(.sRGB) else {
+            return .white
+        }
+        let relativeLuminance = (0.2126 * sRGBColor.redComponent)
+            + (0.7152 * sRGBColor.greenComponent)
+            + (0.0722 * sRGBColor.blueComponent)
+        return relativeLuminance > 0.62 ? Color.black.opacity(0.82) : .white
     }
 
     @Published var selectedTTSVoiceID: String = UserDefaults.standard.string(forKey: "selectedMiniMaxTTSVoiceID")
@@ -354,11 +388,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func setCompanionGlowColor(_ color: Color) {
-        guard let sRGBColor = NSColor(color).usingColorSpace(.sRGB) else { return }
-        let red = Int(round(sRGBColor.redComponent * 255))
-        let green = Int(round(sRGBColor.greenComponent * 255))
-        let blue = Int(round(sRGBColor.blueComponent * 255))
-        let colorHex = String(format: "#%02X%02X%02X", red, green, blue)
+        guard let colorHex = colorHex(for: color) else { return }
         companionGlowColorHex = colorHex
         UserDefaults.standard.set(colorHex, forKey: "zhuangzhuangGlowColorHex")
     }
@@ -378,6 +408,37 @@ final class CompanionManager: ObservableObject {
         let normalizedDelaySeconds = min(max(delaySeconds.rounded(), 2), 30)
         companionAutoHideDelaySeconds = normalizedDelaySeconds
         UserDefaults.standard.set(normalizedDelaySeconds, forKey: "zhuangzhuangAutoHideDelaySeconds")
+    }
+
+    func setCompanionPointingMarkerDiameter(_ markerDiameter: Double) {
+        let normalizedMarkerDiameter = min(max(markerDiameter.rounded(), 20), 64)
+        companionPointingMarkerDiameter = normalizedMarkerDiameter
+        UserDefaults.standard.set(normalizedMarkerDiameter, forKey: "zhuangzhuangPointingMarkerDiameter")
+    }
+
+    func setCompanionPointingCenterDotEnabled(_ enabled: Bool) {
+        isCompanionPointingCenterDotEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "zhuangzhuangPointingCenterDotEnabled")
+    }
+
+    func setCompanionPointingMarkerColor(_ color: Color) {
+        guard let colorHex = colorHex(for: color) else { return }
+        companionPointingMarkerColorHex = colorHex
+        UserDefaults.standard.set(colorHex, forKey: "zhuangzhuangPointingMarkerColorHex")
+    }
+
+    func setCompanionPointingLabelBackgroundColor(_ color: Color) {
+        guard let colorHex = colorHex(for: color) else { return }
+        companionPointingLabelBackgroundColorHex = colorHex
+        UserDefaults.standard.set(colorHex, forKey: "zhuangzhuangPointingLabelBackgroundColorHex")
+    }
+
+    private func colorHex(for color: Color) -> String? {
+        guard let sRGBColor = NSColor(color).usingColorSpace(.sRGB) else { return nil }
+        let red = Int(round(sRGBColor.redComponent * 255))
+        let green = Int(round(sRGBColor.greenComponent * 255))
+        let blue = Int(round(sRGBColor.blueComponent * 255))
+        return String(format: "#%02X%02X%02X", red, green, blue)
     }
 
     func setSelectedTTSVoiceID(_ voiceID: String) {
