@@ -179,7 +179,7 @@ final class CompanionManager: ObservableObject {
     /// through this so keys never ship in the app binary.
     private static let workerBaseURL = AppBundleConfiguration.workerBaseURL
     private static let maxConversationHistoryCount = 10
-    private static let pointingConversationHistoryCount = 2
+    private static let pointingConversationHistoryCount = 1
     private static let maxAssistantHistoryCharacters = 2_400
     private static let standardScreenshotLongEdgeInPixels = 2048
     private static let pointingScreenshotLongEdgeInPixels = 3072
@@ -952,11 +952,19 @@ final class CompanionManager: ObservableObject {
                     return (data: capture.imageData, label: capture.label)
                 }
 
-                // Older screen coordinates are actively harmful to a new pointing
-                // request, so location work receives only the latest two exchanges.
-                let conversationHistoryForRequest = shouldRequestPointing
-                    ? Array(conversationHistory.suffix(Self.pointingConversationHistoryCount))
-                    : conversationHistory
+                // A newly named visual target is self-contained. Carrying the old
+                // target into that request can make the model answer the previous
+                // question again. Only context-dependent follow-ups retain one exchange.
+                let requiresPreviousVisualContext = shouldRequestPointing
+                    && PointingRequestPolicy.requiresPreviousVisualContext(for: transcript)
+                let conversationHistoryForRequest: [CompanionConversationExchange]
+                if shouldRequestPointing {
+                    conversationHistoryForRequest = requiresPreviousVisualContext
+                        ? Array(conversationHistory.suffix(Self.pointingConversationHistoryCount))
+                        : []
+                } else {
+                    conversationHistoryForRequest = conversationHistory
+                }
                 let historyForAPI = conversationHistoryForRequest.map { entry in
                     (
                         userPlaceholder: entry.userTranscript,

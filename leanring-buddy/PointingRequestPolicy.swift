@@ -20,6 +20,7 @@ enum PointingRequestPolicy {
 
         let explicitPointingPhrases = [
             "指给我看", "给我指", "帮我指", "指一下",
+            "点一下", "点击一下",
             "点哪里", "点击哪里", "点哪个", "点击哪个",
             "应该点", "该点",
             "point to", "show me where", "where should i click",
@@ -111,6 +112,35 @@ enum PointingRequestPolicy {
         return visibleSearchOrLocationPhrases.contains {
             normalizedTranscript.contains($0)
         } && describesVisibleTarget
+    }
+
+    /// A newly named target should be located from the current screenshot alone.
+    /// Only short follow-ups that depend on an earlier target retain visual history.
+    nonisolated static func requiresPreviousVisualContext(for transcript: String) -> Bool {
+        let normalizedTranscript = transcript
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTranscript.isEmpty, normalizedTranscript.count <= 30 else {
+            return false
+        }
+
+        let previousTargetReferences = [
+            "它", "刚才那个", "刚刚那个", "前面那个", "上一个",
+            "that one", "the previous one"
+        ]
+        if previousTargetReferences.contains(where: { normalizedTranscript.contains($0) }) {
+            return true
+        }
+
+        let contextDependentClosePhrases = [
+            "告诉我如何关掉", "告诉我怎么关掉", "怎么关掉", "如何关掉",
+            "where do i close it", "how do i close it"
+        ]
+        return contextDependentClosePhrases.contains {
+            normalizedTranscript == $0
+                || normalizedTranscript == "\($0)？"
+                || normalizedTranscript == "\($0)?"
+        }
     }
 }
 

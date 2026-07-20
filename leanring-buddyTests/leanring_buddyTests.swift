@@ -197,6 +197,30 @@ struct leanring_buddyTests {
         ))
     }
 
+    @Test func explicitClickActionOnNamedIconRequestsFreshPointingContext() async throws {
+        #expect(PointingRequestPolicy.shouldRequestPointing(
+            for: "点一下微信的图标"
+        ))
+        #expect(!PointingRequestPolicy.requiresPreviousVisualContext(
+            for: "点一下微信的图标"
+        ))
+    }
+
+    @Test func contextDependentVisualFollowUpKeepsOnePreviousExchange() async throws {
+        #expect(PointingRequestPolicy.requiresPreviousVisualContext(
+            for: "怎么关掉它？"
+        ))
+        #expect(PointingRequestPolicy.requiresPreviousVisualContext(
+            for: "刚才那个在哪？"
+        ))
+        #expect(PointingRequestPolicy.requiresPreviousVisualContext(
+            for: "告诉我如何关掉"
+        ))
+        #expect(!PointingRequestPolicy.requiresPreviousVisualContext(
+            for: "点一下微信的图标"
+        ))
+    }
+
     @Test func streamingSpeechEmitsCompletedSentenceBeforeResponseFinishes() async throws {
         var segmenter = StreamingSpeechSegmenter()
 
