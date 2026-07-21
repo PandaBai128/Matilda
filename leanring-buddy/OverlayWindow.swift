@@ -274,7 +274,7 @@ struct BlueCursorView: View {
             self.cursorOpacity = 1.0
         }
         .onDisappear {
-            navigationAnimationTimer?.invalidate()
+            finishNavigationAndResumeFollowing()
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
             // When a UI element location is detected, navigate the buddy to
@@ -900,8 +900,10 @@ class OverlayWindowManager {
     private var cursorTracker: CompanionCursorTracker?
 
     func showOverlay(onScreens screens: [NSScreen], companionManager: CompanionManager) {
-        // Hide any existing overlays
-        hideOverlay()
+        // Rebuilding an overlay can interrupt an in-flight pointing animation.
+        // Clear that target before removing the view so it cannot permanently
+        // block the next tracker's inactivity deadline.
+        hideOverlay(companionManager: companionManager)
 
         let cursorTracker = CompanionCursorTracker(
             screenFrames: screens.map(\.frame),
@@ -928,7 +930,8 @@ class OverlayWindowManager {
         }
     }
 
-    func hideOverlay() {
+    func hideOverlay(companionManager: CompanionManager) {
+        companionManager.clearDetectedElementLocation()
         cursorTracker?.stop()
         cursorTracker = nil
         for window in overlayWindows {
@@ -939,7 +942,11 @@ class OverlayWindowManager {
     }
 
     /// Fades out overlay windows over `duration` seconds, then removes them.
-    func fadeOutAndHideOverlay(duration: TimeInterval = 0.4) {
+    func fadeOutAndHideOverlay(
+        companionManager: CompanionManager,
+        duration: TimeInterval = 0.4
+    ) {
+        companionManager.clearDetectedElementLocation()
         cursorTracker?.stop()
         cursorTracker = nil
         let windowsToFade = overlayWindows

@@ -534,7 +534,7 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         } else {
-            overlayWindowManager.hideOverlay()
+            overlayWindowManager.hideOverlay(companionManager: self)
             isOverlayVisible = false
         }
     }
@@ -567,7 +567,7 @@ final class CompanionManager: ObservableObject {
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
-        overlayWindowManager.hideOverlay()
+        overlayWindowManager.hideOverlay(companionManager: self)
         transientHideTask?.cancel()
 
         currentResponseTask?.cancel()
@@ -579,6 +579,7 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        voiceState = .idle
     }
 
     func refreshAllPermissions() {
@@ -1114,7 +1115,7 @@ final class CompanionManager: ObservableObject {
             // Pause 1s after everything finishes, then fade out
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard !Task.isCancelled else { return }
-            overlayWindowManager.fadeOutAndHideOverlay()
+            overlayWindowManager.fadeOutAndHideOverlay(companionManager: self)
             isOverlayVisible = false
         }
     }

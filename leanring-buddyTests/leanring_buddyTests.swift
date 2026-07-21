@@ -361,6 +361,167 @@ struct leanring_buddyTests {
         #expect(visibilityChanges == [true, false])
     }
 
+    @Test func liveAutoHideSchedulerFiresAndHonorsCancellation() async throws {
+        var firedActionCount = 0
+        _ = CompanionAutoHideController.liveScheduler(delaySeconds: 0.02) {
+            firedActionCount += 1
+        }
+
+        try await Task.sleep(nanoseconds: 80_000_000)
+        #expect(firedActionCount == 1)
+
+        let cancelledAction = CompanionAutoHideController.liveScheduler(delaySeconds: 0.02) {
+            firedActionCount += 1
+        }
+        cancelledAction.cancel()
+        try await Task.sleep(nanoseconds: 80_000_000)
+        #expect(firedActionCount == 1)
+    }
+
+    @Test func overlayTeardownClearsStalePointingBlockerBeforeAutoHideDeadline() async throws {
+        let userDefaults = UserDefaults.standard
+        let previousAutoHideEnabled = userDefaults.object(forKey: "zhuangzhuangAutoHideEnabled")
+        let previousAutoHideDelay = userDefaults.object(forKey: "zhuangzhuangAutoHideDelaySeconds")
+        let previousCursorEnabled = userDefaults.object(forKey: "isClickyCursorEnabled")
+        defer {
+            restoreUserDefaultsValue(previousAutoHideEnabled, forKey: "zhuangzhuangAutoHideEnabled")
+            restoreUserDefaultsValue(previousAutoHideDelay, forKey: "zhuangzhuangAutoHideDelaySeconds")
+            restoreUserDefaultsValue(previousCursorEnabled, forKey: "isClickyCursorEnabled")
+        }
+
+        let companionManager = CompanionManager()
+        companionManager.setCompanionAutoHideEnabled(true)
+        companionManager.setCompanionAutoHideDelaySeconds(5)
+        companionManager.detectedElementScreenLocation = CGPoint(x: 500, y: 400)
+        companionManager.detectedElementDisplayFrame = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+
+        // Overlay teardown can happen before the pointing view finishes its
+        // navigation callback. That stale target is not real user activity and
+        // must not block the next tracker's inactivity deadline.
+        companionManager.setClickyCursorEnabled(false)
+
+        let testScheduler = TestCompanionAutoHideScheduler()
+        let cursorTracker = CompanionCursorTracker(
+            screenFrames: [CGRect(x: -10_000, y: -10_000, width: 20_000, height: 20_000)],
+            companionManager: companionManager,
+            startsEventMonitoring: false,
+            autoHideScheduler: testScheduler.schedule
+        )
+
+        testScheduler.advance(by: 5)
+
+        #expect(companionManager.detectedElementScreenLocation == nil)
+        #expect(companionManager.detectedElementDisplayFrame == nil)
+        #expect(cursorTracker.isHiddenForInactivity)
+        cursorTracker.stop()
+    }
+
+    @Test func cursorTrackerResetsOneDeadlineForEachRealMouseMovement() async throws {
+        let previousAutoHideEnabled = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideEnabled")
+        let previousAutoHideDelay = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideDelaySeconds")
+        defer {
+            restoreUserDefaultsValue(previousAutoHideEnabled, forKey: "zhuangzhuangAutoHideEnabled")
+            restoreUserDefaultsValue(previousAutoHideDelay, forKey: "zhuangzhuangAutoHideDelaySeconds")
+        }
+
+        let companionManager = CompanionManager()
+        companionManager.setCompanionAutoHideEnabled(true)
+        companionManager.setCompanionAutoHideDelaySeconds(5)
+        let testScheduler = TestCompanionAutoHideScheduler()
+        let cursorTracker = CompanionCursorTracker(
+            screenFrames: [CGRect(x: -10_000, y: -10_000, width: 20_000, height: 20_000)],
+            companionManager: companionManager,
+            startsEventMonitoring: false,
+            autoHideScheduler: testScheduler.schedule
+        )
+
+        testScheduler.advance(by: 5)
+        #expect(cursorTracker.isHiddenForInactivity)
+
+        let scheduledEntryCountBeforeMovement = testScheduler.entries.count
+        cursorTracker.recordMouseMovement(at: CGPoint(x: 200, y: 300))
+        #expect(!cursorTracker.isHiddenForInactivity)
+        #expect(testScheduler.entries.count == scheduledEntryCountBeforeMovement + 1)
+
+        testScheduler.advance(by: 4.99)
+        #expect(!cursorTracker.isHiddenForInactivity)
+        testScheduler.advance(by: 0.01)
+        #expect(cursorTracker.isHiddenForInactivity)
+        cursorTracker.stop()
+    }
+
+    @Test func cursorTrackerWaitsForVoiceAndPointingInteractionsToFinish() async throws {
+        let previousAutoHideEnabled = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideEnabled")
+        let previousAutoHideDelay = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideDelaySeconds")
+        defer {
+            restoreUserDefaultsValue(previousAutoHideEnabled, forKey: "zhuangzhuangAutoHideEnabled")
+            restoreUserDefaultsValue(previousAutoHideDelay, forKey: "zhuangzhuangAutoHideDelaySeconds")
+        }
+
+        let companionManager = CompanionManager()
+        companionManager.setCompanionAutoHideEnabled(true)
+        companionManager.setCompanionAutoHideDelaySeconds(5)
+        let testScheduler = TestCompanionAutoHideScheduler()
+        let cursorTracker = CompanionCursorTracker(
+            screenFrames: [CGRect(x: -10_000, y: -10_000, width: 20_000, height: 20_000)],
+            companionManager: companionManager,
+            startsEventMonitoring: false,
+            autoHideScheduler: testScheduler.schedule
+        )
+
+        for activeVoiceState in [
+            CompanionVoiceState.listening,
+            .processing,
+            .responding
+        ] {
+            cursorTracker.applyAutoHideInteractionState(
+                voiceState: activeVoiceState,
+                hasActivePointingTarget: false
+            )
+            testScheduler.advance(by: 10)
+            #expect(!cursorTracker.isHiddenForInactivity)
+
+            cursorTracker.applyAutoHideInteractionState(
+                voiceState: .idle,
+                hasActivePointingTarget: false
+            )
+            testScheduler.advance(by: 4.99)
+            #expect(!cursorTracker.isHiddenForInactivity)
+            testScheduler.advance(by: 0.01)
+            #expect(cursorTracker.isHiddenForInactivity)
+        }
+
+        cursorTracker.applyAutoHideInteractionState(
+            voiceState: .idle,
+            hasActivePointingTarget: true
+        )
+        testScheduler.advance(by: 10)
+        #expect(!cursorTracker.isHiddenForInactivity)
+
+        let staleEntryIndex = testScheduler.entries.count - 1
+        cursorTracker.applyAutoHideInteractionState(
+            voiceState: .idle,
+            hasActivePointingTarget: false
+        )
+        testScheduler.fireEntry(at: staleEntryIndex)
+        #expect(!cursorTracker.isHiddenForInactivity)
+        testScheduler.advance(by: 5)
+        #expect(cursorTracker.isHiddenForInactivity)
+        cursorTracker.stop()
+    }
+
+    @Test func overlayManagerClearsPairedPointingStateWhenNavigationIsInterrupted() async throws {
+        let companionManager = CompanionManager()
+        let overlayWindowManager = OverlayWindowManager()
+        companionManager.detectedElementScreenLocation = CGPoint(x: 1728, y: 1117)
+        companionManager.detectedElementDisplayFrame = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+
+        overlayWindowManager.hideOverlay(companionManager: companionManager)
+
+        #expect(companionManager.detectedElementScreenLocation == nil)
+        #expect(companionManager.detectedElementDisplayFrame == nil)
+    }
+
     @Test func animationCadenceMatchesInteractionCost() async throws {
         #expect(CompanionAnimationCadencePolicy.framesPerSecond(
             voiceState: .idle,
@@ -492,24 +653,38 @@ struct leanring_buddyTests {
 
 }
 
+private func restoreUserDefaultsValue(_ value: Any?, forKey key: String) {
+    if let value {
+        UserDefaults.standard.set(value, forKey: key)
+    } else {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+}
+
 @MainActor
 private final class TestCompanionAutoHideScheduler {
     final class Entry {
+        let deadlineSeconds: TimeInterval
         let action: @MainActor () -> Void
         var isCancelled = false
 
-        init(action: @escaping @MainActor () -> Void) {
+        init(deadlineSeconds: TimeInterval, action: @escaping @MainActor () -> Void) {
+            self.deadlineSeconds = deadlineSeconds
             self.action = action
         }
     }
 
     private(set) var entries: [Entry] = []
+    private var currentTimeSeconds: TimeInterval = 0
 
     func schedule(
         delaySeconds: TimeInterval,
         action: @escaping @MainActor () -> Void
     ) -> CompanionScheduledAction {
-        let entry = Entry(action: action)
+        let entry = Entry(
+            deadlineSeconds: currentTimeSeconds + delaySeconds,
+            action: action
+        )
         entries.append(entry)
         return CompanionScheduledAction {
             entry.isCancelled = true
@@ -518,5 +693,13 @@ private final class TestCompanionAutoHideScheduler {
 
     func fireEntry(at index: Int) {
         entries[index].action()
+    }
+
+    func advance(by elapsedSeconds: TimeInterval) {
+        currentTimeSeconds += elapsedSeconds
+        for entry in entries where !entry.isCancelled && entry.deadlineSeconds <= currentTimeSeconds {
+            entry.action()
+            entry.isCancelled = true
+        }
     }
 }

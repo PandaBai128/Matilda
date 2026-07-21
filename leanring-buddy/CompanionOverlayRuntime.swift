@@ -297,6 +297,19 @@ final class CompanionCursorTracker: ObservableObject {
         startSmoothingIfNeeded(currentDate: currentDate)
     }
 
+    func applyAutoHideInteractionState(
+        voiceState: CompanionVoiceState,
+        hasActivePointingTarget: Bool
+    ) {
+        guard let companionManager else { return }
+        autoHideController.configure(
+            isEnabled: companionManager.isCompanionAutoHideEnabled,
+            delaySeconds: companionManager.companionAutoHideDelaySeconds,
+            isInteractionActive: voiceState != .idle || hasActivePointingTarget,
+            isFollowingCursor: !hasActivePointingTarget
+        )
+    }
+
     private func startEventMonitoring() {
         let monitoredEvents: NSEvent.EventTypeMask = [
             .mouseMoved,
@@ -345,12 +358,9 @@ final class CompanionCursorTracker: ObservableObject {
 
     private func refreshAutoHideConfiguration() {
         guard let companionManager else { return }
-        autoHideController.configure(
-            isEnabled: companionManager.isCompanionAutoHideEnabled,
-            delaySeconds: companionManager.companionAutoHideDelaySeconds,
-            isInteractionActive: companionManager.voiceState != .idle
-                || companionManager.detectedElementScreenLocation != nil,
-            isFollowingCursor: companionManager.detectedElementScreenLocation == nil
+        applyAutoHideInteractionState(
+            voiceState: companionManager.voiceState,
+            hasActivePointingTarget: companionManager.detectedElementScreenLocation != nil
         )
     }
 
