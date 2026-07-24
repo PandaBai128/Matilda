@@ -126,6 +126,23 @@ struct TTSCancellationTests {
         #expect(cleanupFinished.wait(timeout: .now() + 1) == .success)
     }
 
+    @Test func audioOutputInterruptionCompletesExactlyOnceWhenQueueCallbackIsLost() async throws {
+        var playbackFinishedCount = 0
+        var failureCount = 0
+        let player = StreamingMP3AudioPlayer(
+            onPlaybackStarted: {},
+            onPlaybackFinished: { playbackFinishedCount += 1 },
+            onFailure: { _ in failureCount += 1 }
+        )
+
+        player.handleAudioOutputInterruption()
+        player.handleAudioOutputInterruption()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(failureCount == 1)
+        #expect(playbackFinishedCount == 0)
+    }
+
     private func makeClient(
         audioPlaybackHandler: @escaping (Data) throws -> Void
     ) -> ElevenLabsTTSClient {

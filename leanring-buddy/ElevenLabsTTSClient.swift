@@ -406,13 +406,40 @@ final class ElevenLabsTTSClient: NSObject, AVAudioPlayerDelegate {
         }
     }
 
+    struct PlaybackBlockerSnapshot: Equatable {
+        let isCompleteAudioPlaying: Bool
+        let hasStreamingAudioPlayer: Bool
+        let hasStreamingSynthesisTask: Bool
+        let hasPendingStreamingSpeech: Bool
+        let isAcceptingStreamingSpeech: Bool
+
+        var isPlaying: Bool {
+            isCompleteAudioPlaying
+                || hasStreamingAudioPlayer
+                || hasStreamingSynthesisTask
+                || hasPendingStreamingSpeech
+                || isAcceptingStreamingSpeech
+        }
+    }
+
+    var playbackBlockerSnapshot: PlaybackBlockerSnapshot {
+        PlaybackBlockerSnapshot(
+            isCompleteAudioPlaying: audioPlayer?.isPlaying ?? false,
+            hasStreamingAudioPlayer: streamingAudioPlayer != nil,
+            hasStreamingSynthesisTask: streamingSynthesisTask != nil,
+            hasPendingStreamingSpeech: !pendingStreamingSpeechRequests.isEmpty,
+            isAcceptingStreamingSpeech: isAcceptingStreamingSpeech
+        )
+    }
+
     /// Whether TTS audio is currently playing back.
     var isPlaying: Bool {
-        (audioPlayer?.isPlaying ?? false)
-            || streamingAudioPlayer != nil
-            || streamingSynthesisTask != nil
-            || !pendingStreamingSpeechRequests.isEmpty
-            || isAcceptingStreamingSpeech
+        playbackBlockerSnapshot.isPlaying
+    }
+
+    func handleAudioOutputInterruption() {
+        streamingAudioPlayer?.handleAudioOutputInterruption()
+        stopPlayback()
     }
 
     /// Stops any in-progress playback immediately.

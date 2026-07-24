@@ -8,6 +8,7 @@
 //
 
 import AVFoundation
+import AppKit
 import Combine
 import Foundation
 import OSLog
@@ -29,6 +30,59 @@ enum CompanionVoiceState {
     case listening
     case processing
     case responding
+}
+
+enum CompanionResponseCompletionReason: Equatable {
+    case succeeded
+    case failed
+    case cancelled
+    case interactionTimedOut
+    case playbackTimedOut
+    case audioOutputInterrupted
+
+    var requiresPlaybackCleanup: Bool {
+        self != .succeeded
+    }
+}
+
+enum CompanionPlaybackDrainResult: Equatable {
+    case finished
+    case timedOut
+    case cancelled
+}
+
+@MainActor
+struct CompanionPlaybackDrainMonitor {
+    typealias Sleep = (_ nanoseconds: UInt64) async throws -> Void
+
+    static func waitUntilFinished(
+        maximumWaitSeconds: TimeInterval,
+        pollIntervalSeconds: TimeInterval,
+        isPlaying: @escaping () -> Bool,
+        sleep: @escaping Sleep = { nanoseconds in
+            try await Task.sleep(nanoseconds: nanoseconds)
+        }
+    ) async -> CompanionPlaybackDrainResult {
+        let boundedPollInterval = max(pollIntervalSeconds, 0.01)
+        let maximumPollCount = max(
+            1,
+            Int(ceil(maximumWaitSeconds / boundedPollInterval))
+        )
+        let pollNanoseconds = UInt64(boundedPollInterval * 1_000_000_000)
+
+        for _ in 0..<maximumPollCount {
+            guard !Task.isCancelled else { return .cancelled }
+            guard isPlaying() else { return .finished }
+            do {
+                try await sleep(pollNanoseconds)
+            } catch {
+                return .cancelled
+            }
+        }
+
+        guard !Task.isCancelled else { return .cancelled }
+        return isPlaying() ? .timedOut : .finished
+    }
 }
 
 enum CompanionResponseLength: String, CaseIterable {
@@ -183,6 +237,9 @@ final class CompanionManager: ObservableObject {
     private static let maxAssistantHistoryCharacters = 2_400
     private static let standardScreenshotLongEdgeInPixels = 2048
     private static let pointingScreenshotLongEdgeInPixels = 3072
+    static let responseInteractionTimeoutSeconds: TimeInterval = 300
+    static let streamingPlaybackDrainTimeoutSeconds: TimeInterval = 180
+    static let streamingPlaybackPollIntervalSeconds: TimeInterval = 0.1
 
     private lazy var claudeAPI: ClaudeAPI = {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
@@ -200,7 +257,7 @@ final class CompanionManager: ObservableObject {
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
-    private var currentResponseTaskIdentifier = UUID()
+    private var activeResponseInteractionIdentifier: UUID?
     private var ttsVoicePreviewTask: Task<Void, Never>?
     private var ttsVoicePreviewIdentifier = UUID()
 
@@ -212,6 +269,10 @@ final class CompanionManager: ObservableObject {
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+    private var workspaceSleepObserverToken: NSObjectProtocol?
+    private var workspaceWakeObserverToken: NSObjectProtocol?
+    var responseInteractionWatchdogScheduler:
+        CompanionAutoHideController.Scheduler = CompanionAutoHideController.liveScheduler
 
     /// True when all four required permissions are granted. Used by the panel to
     /// show a single "all good" state.
@@ -547,6 +608,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        startAudioOutputObservation()
         // Eagerly touch the API clients so network setup begins before the first interaction.
         _ = claudeAPI
         loadAvailableTTSVoices()
@@ -570,15 +632,13 @@ final class CompanionManager: ObservableObject {
         overlayWindowManager.hideOverlay(companionManager: self)
         transientHideTask?.cancel()
 
-        currentResponseTask?.cancel()
-        currentResponseTask = nil
-        stopAllSpeechAndCancelPreview()
-        currentResponseTaskIdentifier = UUID()
+        cancelCurrentResponseInteraction()
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        stopAudioOutputObservation()
         voiceState = .idle
     }
 
@@ -754,11 +814,7 @@ final class CompanionManager: ObservableObject {
             isOverlayVisible = true
         }
 
-        currentResponseTask?.cancel()
-        currentResponseTask = nil
-        currentResponseTaskIdentifier = UUID()
-        stopAllSpeechAndCancelPreview()
-        voiceState = .idle
+        cancelCurrentResponseInteraction()
         clearDetectedElementLocation()
 
 
@@ -798,11 +854,7 @@ final class CompanionManager: ObservableObject {
             NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
             // Cancel any in-progress response and TTS from a previous utterance
-            currentResponseTask?.cancel()
-            currentResponseTask = nil
-            currentResponseTaskIdentifier = UUID()
-            stopAllSpeechAndCancelPreview()
-            voiceState = .idle
+            cancelCurrentResponseInteraction()
             clearDetectedElementLocation()
 
 
@@ -902,6 +954,107 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
+    func beginResponseInteraction(responseTaskIdentifier: UUID) {
+        activeResponseInteractionIdentifier = responseTaskIdentifier
+        voiceState = .processing
+    }
+
+    func markResponsePlaybackStarted(responseTaskIdentifier: UUID) {
+        guard activeResponseInteractionIdentifier == responseTaskIdentifier else { return }
+        voiceState = .responding
+    }
+
+    func completeResponseInteraction(
+        responseTaskIdentifier: UUID,
+        reason: CompanionResponseCompletionReason
+    ) {
+        guard activeResponseInteractionIdentifier == responseTaskIdentifier else { return }
+        activeResponseInteractionIdentifier = nil
+        if reason.requiresPlaybackCleanup {
+            stopAllSpeechAndCancelPreview()
+        }
+        voiceState = .idle
+        currentResponseTask = nil
+        scheduleTransientHideIfNeeded()
+    }
+
+    func cancelCurrentResponseInteraction(
+        reason: CompanionResponseCompletionReason = .cancelled
+    ) {
+        currentResponseTask?.cancel()
+        if let activeResponseInteractionIdentifier {
+            completeResponseInteraction(
+                responseTaskIdentifier: activeResponseInteractionIdentifier,
+                reason: reason
+            )
+        } else {
+            currentResponseTask = nil
+            stopAllSpeechAndCancelPreview()
+            voiceState = .idle
+        }
+    }
+
+    func isCurrentResponseInteraction(_ responseTaskIdentifier: UUID) -> Bool {
+        activeResponseInteractionIdentifier == responseTaskIdentifier
+    }
+
+    func scheduleResponseInteractionWatchdog(
+        responseTaskIdentifier: UUID,
+        timeoutSeconds: TimeInterval = CompanionManager.responseInteractionTimeoutSeconds
+    ) -> CompanionScheduledAction {
+        responseInteractionWatchdogScheduler(timeoutSeconds) { [weak self] in
+            guard let self,
+                  self.activeResponseInteractionIdentifier == responseTaskIdentifier else { return }
+            self.currentResponseTask?.cancel()
+            self.completeResponseInteraction(
+                responseTaskIdentifier: responseTaskIdentifier,
+                reason: .interactionTimedOut
+            )
+        }
+    }
+
+    private func startAudioOutputObservation() {
+        guard workspaceSleepObserverToken == nil,
+              workspaceWakeObserverToken == nil else { return }
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+
+        workspaceSleepObserverToken = workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.endCurrentResponseAfterAudioOutputInterruption()
+            }
+        }
+        workspaceWakeObserverToken = workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.endCurrentResponseAfterAudioOutputInterruption()
+            }
+        }
+    }
+
+    private func stopAudioOutputObservation() {
+        if let workspaceSleepObserverToken {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceSleepObserverToken)
+            self.workspaceSleepObserverToken = nil
+        }
+        if let workspaceWakeObserverToken {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceWakeObserverToken)
+            self.workspaceWakeObserverToken = nil
+        }
+    }
+
+    func endCurrentResponseAfterAudioOutputInterruption() {
+        guard activeResponseInteractionIdentifier != nil else { return }
+        elevenLabsTTSClient.handleAudioOutputInterruption()
+        cancelCurrentResponseInteraction(reason: .audioOutputInterrupted)
+    }
+
     private func appendConversationHistory(userTranscript: String, assistantResponse: String) {
         conversationHistory.append(CompanionConversationExchange(
             userTranscript: userTranscript,
@@ -922,8 +1075,7 @@ final class CompanionManager: ObservableObject {
     /// MiniMax may return a point tag only when the user's words explicitly
     /// request on-screen location help.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
-        currentResponseTask?.cancel()
-        stopAllSpeechAndCancelPreview()
+        cancelCurrentResponseInteraction()
 
         let shouldRequestPointing = PointingRequestPolicy.shouldRequestPointing(
             for: transcript,
@@ -931,10 +1083,19 @@ final class CompanionManager: ObservableObject {
         )
         let shouldExtractScreenText = ScreenTextExtractionPolicy.isTextExtractionRequest(transcript)
         let responseTaskIdentifier = UUID()
-        currentResponseTaskIdentifier = responseTaskIdentifier
+        beginResponseInteraction(responseTaskIdentifier: responseTaskIdentifier)
         currentResponseTask = Task {
-            // Stay in processing (spinner) state — no streaming text displayed
-            voiceState = .processing
+            var completionReason = CompanionResponseCompletionReason.succeeded
+            let interactionWatchdog = scheduleResponseInteractionWatchdog(
+                responseTaskIdentifier: responseTaskIdentifier
+            )
+            defer {
+                interactionWatchdog.cancel()
+                completeResponseInteraction(
+                    responseTaskIdentifier: responseTaskIdentifier,
+                    reason: completionReason
+                )
+            }
 
             do {
                 // Small controls need more source pixels for reliable pointing,
@@ -984,13 +1145,13 @@ final class CompanionManager: ObservableObject {
                 ttsSpeechErrorMessage = nil
                 streamingSpeechSession.begin(
                     onPlaybackStarted: { [weak self] in
-                        guard let self,
-                              self.currentResponseTaskIdentifier == responseTaskIdentifier else { return }
-                        self.voiceState = .responding
+                        self?.markResponsePlaybackStarted(
+                            responseTaskIdentifier: responseTaskIdentifier
+                        )
                     },
                     onFailure: { [weak self] error in
                         guard let self,
-                              self.currentResponseTaskIdentifier == responseTaskIdentifier else { return }
+                              self.isCurrentResponseInteraction(responseTaskIdentifier) else { return }
                         self.ttsSpeechErrorMessage = error.localizedDescription
                         print("⚠️ Streaming TTS error: \(error)")
                     }
@@ -1006,7 +1167,7 @@ final class CompanionManager: ObservableObject {
                     ),
                     temperature: requiresDetailedScreenshot ? 0.1 : nil,
                     onTextChunk: { accumulatedText in
-                        guard self.currentResponseTaskIdentifier == responseTaskIdentifier,
+                        guard self.isCurrentResponseInteraction(responseTaskIdentifier),
                               !Task.isCancelled else { return }
                         streamingSpeechSession.consume(accumulatedText: accumulatedText)
                     }
@@ -1061,30 +1222,36 @@ final class CompanionManager: ObservableObject {
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
 
-                // Keep this response task alive until all synthesized sentence
-                // segments finish so a new push-to-talk can cancel the whole queue.
-                while elevenLabsTTSClient.isPlaying {
-                    try await Task.sleep(nanoseconds: 100_000_000)
+                let playbackDrainResult = await CompanionPlaybackDrainMonitor.waitUntilFinished(
+                    maximumWaitSeconds: Self.streamingPlaybackDrainTimeoutSeconds,
+                    pollIntervalSeconds: Self.streamingPlaybackPollIntervalSeconds,
+                    isPlaying: { [weak self] in
+                        self?.elevenLabsTTSClient.isPlaying ?? false
+                    }
+                )
+                switch playbackDrainResult {
+                case .finished:
+                    break
+                case .timedOut:
+                    completionReason = .playbackTimedOut
+                    return
+                case .cancelled:
+                    completionReason = .cancelled
+                    return
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted
-                elevenLabsTTSClient.stopPlayback()
+                completionReason = .cancelled
             } catch {
-                elevenLabsTTSClient.stopPlayback()
+                completionReason = .failed
                 if !Task.isCancelled && (error as? URLError)?.code != .cancelled {
                     print("⚠️ Companion response error: \(error)")
                     voiceState = .responding
                     await systemSpeechFallbackController.speak(
                         CompanionResponseFailureMessage.spokenMessage(for: error)
                     )
-                }
-            }
-
-            if !Task.isCancelled {
-                voiceState = .idle
-                if currentResponseTaskIdentifier == responseTaskIdentifier {
-                    currentResponseTask = nil
-                    scheduleTransientHideIfNeeded()
+                } else {
+                    completionReason = .cancelled
                 }
             }
         }
@@ -1099,10 +1266,20 @@ final class CompanionManager: ObservableObject {
 
         transientHideTask?.cancel()
         transientHideTask = Task {
-            // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
+            let playbackDrainResult = await CompanionPlaybackDrainMonitor.waitUntilFinished(
+                maximumWaitSeconds: Self.streamingPlaybackDrainTimeoutSeconds,
+                pollIntervalSeconds: 0.2,
+                isPlaying: { [weak self] in
+                    self?.elevenLabsTTSClient.isPlaying ?? false
+                }
+            )
+            switch playbackDrainResult {
+            case .finished:
+                break
+            case .timedOut:
+                elevenLabsTTSClient.stopPlayback()
+            case .cancelled:
+                return
             }
 
             // Wait for pointing animation to finish (location is cleared

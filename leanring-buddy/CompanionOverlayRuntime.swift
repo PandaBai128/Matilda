@@ -85,6 +85,24 @@ final class CompanionScheduledAction {
 
 @MainActor
 final class CompanionAutoHideController {
+    enum BlockerReason: Equatable {
+        case disabled
+        case interactionActive
+        case notFollowingCursor
+    }
+
+    struct StateSnapshot: Equatable {
+        let isEnabled: Bool
+        let isInteractionActive: Bool
+        let isFollowingCursor: Bool
+        let isHidden: Bool
+        let blockerReason: BlockerReason?
+
+        var shouldScheduleHide: Bool {
+            blockerReason == nil
+        }
+    }
+
     typealias Scheduler = (
         _ delaySeconds: TimeInterval,
         _ action: @escaping @MainActor () -> Void
@@ -100,6 +118,16 @@ final class CompanionAutoHideController {
     private var isFollowingCursor = true
 
     private(set) var isHidden = false
+
+    var stateSnapshot: StateSnapshot {
+        StateSnapshot(
+            isEnabled: isEnabled,
+            isInteractionActive: isInteractionActive,
+            isFollowingCursor: isFollowingCursor,
+            isHidden: isHidden,
+            blockerReason: blockerReason
+        )
+    }
 
     init(
         scheduler: @escaping Scheduler = CompanionAutoHideController.liveScheduler,
@@ -151,7 +179,20 @@ final class CompanionAutoHideController {
     }
 
     private var shouldScheduleHide: Bool {
-        isEnabled && !isInteractionActive && isFollowingCursor
+        blockerReason == nil
+    }
+
+    private var blockerReason: BlockerReason? {
+        if !isEnabled {
+            return .disabled
+        }
+        if isInteractionActive {
+            return .interactionActive
+        }
+        if !isFollowingCursor {
+            return .notFollowingCursor
+        }
+        return nil
     }
 
     private func scheduleHide() {
@@ -213,6 +254,10 @@ final class CompanionCursorTracker: ObservableObject {
     @Published private(set) var activeScreenFrame: CGRect?
     @Published private(set) var isHiddenForInactivity = false
 
+    var autoHideStateSnapshot: CompanionAutoHideController.StateSnapshot {
+        autoHideController.stateSnapshot
+    }
+
     private weak var companionManager: CompanionManager?
     private var availableScreenFrames: [CGRect]
     private var latestMouseLocation: CGPoint
@@ -247,7 +292,6 @@ final class CompanionCursorTracker: ObservableObject {
         )
 
         bindCompanionState()
-        refreshAutoHideConfiguration()
         if startsEventMonitoring {
             startEventMonitoring()
         }
@@ -334,17 +378,21 @@ final class CompanionCursorTracker: ObservableObject {
     private func bindCompanionState() {
         guard let companionManager else { return }
 
-        companionManager.$voiceState
-            .sink { [weak self] _ in self?.refreshAutoHideConfiguration() }
-            .store(in: &settingsCancellables)
-        companionManager.$detectedElementScreenLocation
-            .sink { [weak self] _ in self?.refreshAutoHideConfiguration() }
-            .store(in: &settingsCancellables)
-        companionManager.$isCompanionAutoHideEnabled
-            .sink { [weak self] _ in self?.refreshAutoHideConfiguration() }
-            .store(in: &settingsCancellables)
-        companionManager.$companionAutoHideDelaySeconds
-            .sink { [weak self] _ in self?.refreshAutoHideConfiguration() }
+        Publishers.CombineLatest4(
+            companionManager.$voiceState,
+            companionManager.$detectedElementScreenLocation,
+            companionManager.$isCompanionAutoHideEnabled,
+            companionManager.$companionAutoHideDelaySeconds
+        )
+            .sink { [weak self] voiceState, pointingTarget, isEnabled, delaySeconds in
+                guard let self else { return }
+                self.autoHideController.configure(
+                    isEnabled: isEnabled,
+                    delaySeconds: delaySeconds,
+                    isInteractionActive: voiceState != .idle || pointingTarget != nil,
+                    isFollowingCursor: pointingTarget == nil
+                )
+            }
             .store(in: &settingsCancellables)
         companionManager.$companionFollowResponse
             .sink { [weak self] followResponse in
@@ -354,14 +402,6 @@ final class CompanionCursorTracker: ObservableObject {
                 }
             }
             .store(in: &settingsCancellables)
-    }
-
-    private func refreshAutoHideConfiguration() {
-        guard let companionManager else { return }
-        applyAutoHideInteractionState(
-            voiceState: companionManager.voiceState,
-            hasActivePointingTarget: companionManager.detectedElementScreenLocation != nil
-        )
     }
 
     private func startSmoothingIfNeeded(currentDate: Date) {

@@ -416,6 +416,206 @@ struct leanring_buddyTests {
         cursorTracker.stop()
     }
 
+    @Test func cancellingCurrentResponseReleasesAutoHideVoiceBlocker() async throws {
+        let companionManager = CompanionManager()
+        let responseTaskIdentifier = UUID()
+
+        companionManager.beginResponseInteraction(
+            responseTaskIdentifier: responseTaskIdentifier
+        )
+        companionManager.markResponsePlaybackStarted(
+            responseTaskIdentifier: responseTaskIdentifier
+        )
+        companionManager.completeResponseInteraction(
+            responseTaskIdentifier: responseTaskIdentifier,
+            reason: .cancelled
+        )
+
+        #expect(companionManager.voiceState == .idle)
+    }
+
+    @Test func staleResponseCompletionCannotEndNewInteraction() {
+        let companionManager = CompanionManager()
+        let olderResponseIdentifier = UUID()
+        let newerResponseIdentifier = UUID()
+
+        companionManager.beginResponseInteraction(
+            responseTaskIdentifier: olderResponseIdentifier
+        )
+        companionManager.beginResponseInteraction(
+            responseTaskIdentifier: newerResponseIdentifier
+        )
+        companionManager.markResponsePlaybackStarted(
+            responseTaskIdentifier: newerResponseIdentifier
+        )
+
+        companionManager.completeResponseInteraction(
+            responseTaskIdentifier: olderResponseIdentifier,
+            reason: .cancelled
+        )
+
+        #expect(companionManager.voiceState == .responding)
+        #expect(companionManager.isCurrentResponseInteraction(newerResponseIdentifier))
+
+        companionManager.completeResponseInteraction(
+            responseTaskIdentifier: newerResponseIdentifier,
+            reason: .succeeded
+        )
+        #expect(companionManager.voiceState == .idle)
+    }
+
+    @Test func interactionWatchdogReleasesStuckResponseAndRestartsAutoHide() {
+        let previousAutoHideEnabled = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideEnabled")
+        let previousAutoHideDelay = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideDelaySeconds")
+        defer {
+            restoreUserDefaultsValue(previousAutoHideEnabled, forKey: "zhuangzhuangAutoHideEnabled")
+            restoreUserDefaultsValue(previousAutoHideDelay, forKey: "zhuangzhuangAutoHideDelaySeconds")
+        }
+
+        let companionManager = CompanionManager()
+        companionManager.setCompanionAutoHideEnabled(true)
+        companionManager.setCompanionAutoHideDelaySeconds(5)
+        let testScheduler = TestCompanionAutoHideScheduler()
+        companionManager.responseInteractionWatchdogScheduler = testScheduler.schedule
+        let cursorTracker = CompanionCursorTracker(
+            screenFrames: [CGRect(x: -10_000, y: -10_000, width: 20_000, height: 20_000)],
+            companionManager: companionManager,
+            startsEventMonitoring: false,
+            autoHideScheduler: testScheduler.schedule
+        )
+        let responseIdentifier = UUID()
+        companionManager.beginResponseInteraction(responseTaskIdentifier: responseIdentifier)
+        _ = companionManager.scheduleResponseInteractionWatchdog(
+            responseTaskIdentifier: responseIdentifier,
+            timeoutSeconds: 30
+        )
+
+        #expect(cursorTracker.autoHideStateSnapshot.blockerReason == .interactionActive)
+        testScheduler.advance(by: 30)
+        #expect(companionManager.voiceState == .idle)
+        #expect(cursorTracker.autoHideStateSnapshot.blockerReason == nil)
+
+        testScheduler.advance(by: 5)
+        #expect(cursorTracker.isHiddenForInactivity)
+        cursorTracker.stop()
+    }
+
+    @Test func playbackDrainTimesOutWhenPlayerNeverCompletes() async {
+        let result = await CompanionPlaybackDrainMonitor.waitUntilFinished(
+            maximumWaitSeconds: 1,
+            pollIntervalSeconds: 0.25,
+            isPlaying: { true },
+            sleep: { _ in }
+        )
+
+        #expect(result == .timedOut)
+    }
+
+    @Test func playbackDrainCancellationDoesNotWaitForDeadline() async {
+        let result = await CompanionPlaybackDrainMonitor.waitUntilFinished(
+            maximumWaitSeconds: 180,
+            pollIntervalSeconds: 0.1,
+            isPlaying: { true },
+            sleep: { _ in throw CancellationError() }
+        )
+
+        #expect(result == .cancelled)
+    }
+
+    @Test func normalLongPlaybackKeepsInteractionActiveUntilCompletionThenHides() async {
+        let previousAutoHideEnabled = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideEnabled")
+        let previousAutoHideDelay = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideDelaySeconds")
+        defer {
+            restoreUserDefaultsValue(previousAutoHideEnabled, forKey: "zhuangzhuangAutoHideEnabled")
+            restoreUserDefaultsValue(previousAutoHideDelay, forKey: "zhuangzhuangAutoHideDelaySeconds")
+        }
+
+        let companionManager = CompanionManager()
+        companionManager.setCompanionAutoHideEnabled(true)
+        companionManager.setCompanionAutoHideDelaySeconds(5)
+        let testScheduler = TestCompanionAutoHideScheduler()
+        let cursorTracker = CompanionCursorTracker(
+            screenFrames: [CGRect(x: -10_000, y: -10_000, width: 20_000, height: 20_000)],
+            companionManager: companionManager,
+            startsEventMonitoring: false,
+            autoHideScheduler: testScheduler.schedule
+        )
+        let responseIdentifier = UUID()
+        companionManager.beginResponseInteraction(responseTaskIdentifier: responseIdentifier)
+        companionManager.markResponsePlaybackStarted(responseTaskIdentifier: responseIdentifier)
+        var remainingPlayingPolls = 3
+
+        let drainResult = await CompanionPlaybackDrainMonitor.waitUntilFinished(
+            maximumWaitSeconds: 10,
+            pollIntervalSeconds: 0.25,
+            isPlaying: {
+                defer { remainingPlayingPolls -= 1 }
+                return remainingPlayingPolls > 0
+            },
+            sleep: { _ in
+                #expect(cursorTracker.autoHideStateSnapshot.blockerReason == .interactionActive)
+            }
+        )
+
+        #expect(drainResult == .finished)
+        #expect(!cursorTracker.isHiddenForInactivity)
+        companionManager.completeResponseInteraction(
+            responseTaskIdentifier: responseIdentifier,
+            reason: .succeeded
+        )
+        testScheduler.advance(by: 5)
+        #expect(cursorTracker.isHiddenForInactivity)
+        cursorTracker.stop()
+    }
+
+    @Test func staleWatchdogCannotEndNewInteraction() {
+        let companionManager = CompanionManager()
+        let scheduler = TestCompanionAutoHideScheduler()
+        companionManager.responseInteractionWatchdogScheduler = scheduler.schedule
+        let olderResponseIdentifier = UUID()
+        let newerResponseIdentifier = UUID()
+
+        companionManager.beginResponseInteraction(responseTaskIdentifier: olderResponseIdentifier)
+        _ = companionManager.scheduleResponseInteractionWatchdog(
+            responseTaskIdentifier: olderResponseIdentifier,
+            timeoutSeconds: 10
+        )
+        companionManager.beginResponseInteraction(responseTaskIdentifier: newerResponseIdentifier)
+        companionManager.markResponsePlaybackStarted(responseTaskIdentifier: newerResponseIdentifier)
+        scheduler.advance(by: 10)
+
+        #expect(companionManager.voiceState == .responding)
+        #expect(companionManager.isCurrentResponseInteraction(newerResponseIdentifier))
+    }
+
+    @Test func autoHideSnapshotExplainsEveryBlocker() {
+        let controller = CompanionAutoHideController(visibilityDidChange: { _ in })
+
+        controller.configure(
+            isEnabled: false,
+            delaySeconds: 5,
+            isInteractionActive: false,
+            isFollowingCursor: true
+        )
+        #expect(controller.stateSnapshot.blockerReason == .disabled)
+
+        controller.configure(
+            isEnabled: true,
+            delaySeconds: 5,
+            isInteractionActive: true,
+            isFollowingCursor: true
+        )
+        #expect(controller.stateSnapshot.blockerReason == .interactionActive)
+
+        controller.configure(
+            isEnabled: true,
+            delaySeconds: 5,
+            isInteractionActive: false,
+            isFollowingCursor: false
+        )
+        #expect(controller.stateSnapshot.blockerReason == .notFollowingCursor)
+    }
+
     @Test func cursorTrackerResetsOneDeadlineForEachRealMouseMovement() async throws {
         let previousAutoHideEnabled = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideEnabled")
         let previousAutoHideDelay = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideDelaySeconds")

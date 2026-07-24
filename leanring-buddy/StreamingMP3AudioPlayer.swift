@@ -16,6 +16,7 @@ nonisolated final class StreamingMP3AudioPlayer: @unchecked Sendable {
         case audioQueueCreationFailed(OSStatus)
         case audioQueueBufferAllocationFailed(OSStatus)
         case audioQueueEnqueueFailed(OSStatus)
+        case audioOutputInterrupted
 
         var errorDescription: String? {
             switch self {
@@ -29,6 +30,8 @@ nonisolated final class StreamingMP3AudioPlayer: @unchecked Sendable {
                 return "Couldn't allocate a streaming audio buffer (\(status))."
             case .audioQueueEnqueueFailed(let status):
                 return "Couldn't enqueue streaming audio (\(status))."
+            case .audioOutputInterrupted:
+                return "Streaming audio output was interrupted."
             }
         }
     }
@@ -187,6 +190,10 @@ nonisolated final class StreamingMP3AudioPlayer: @unchecked Sendable {
             self.endSegmentSynchronously()
             self.disposeAudioQueue(immediately: true)
         }
+    }
+
+    func handleAudioOutputInterruption() {
+        reportFailure(PlayerError.audioOutputInterrupted)
     }
 
     fileprivate func handleProperty(
