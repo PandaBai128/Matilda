@@ -417,10 +417,11 @@ struct BlueCursorView: View {
 
         // Flight duration scales with distance: short hops are quick, long
         // flights are more dramatic. Clamped to 0.6s–1.4s.
-        let flightDurationSeconds = min(max(distance / 800.0, 0.6), 1.4)
-        let frameInterval: Double = 1.0 / 30.0
-        let totalFrames = Int(flightDurationSeconds / frameInterval)
-        var currentFrame = 0
+        let flightDurationSeconds = CompanionAnimationCadencePolicy.navigationFlightDuration(
+            forDistance: distance
+        )
+        let frameInterval = 1.0 / CompanionAnimationCadencePolicy.navigationFlightFramesPerSecond
+        let flightStartTime = ProcessInfo.processInfo.systemUptime
 
         // Control point for the quadratic bezier arc. Offset the midpoint
         // upward (negative Y in SwiftUI) so the buddy flies in a parabolic arc.
@@ -431,10 +432,14 @@ struct BlueCursorView: View {
         let arcHeight = min(distance * 0.2, 80.0)
         let controlPoint = CGPoint(x: midPoint.x, y: midPoint.y - arcHeight)
 
-        navigationAnimationTimer = Timer.scheduledTimer(withTimeInterval: frameInterval, repeats: true) { _ in
-            currentFrame += 1
+        let navigationTimer = Timer(timeInterval: frameInterval, repeats: true) { _ in
+            let elapsedTime = ProcessInfo.processInfo.systemUptime - flightStartTime
+            let linearProgress = CompanionAnimationCadencePolicy.navigationFlightProgress(
+                elapsedTime: elapsedTime,
+                duration: flightDurationSeconds
+            )
 
-            if currentFrame > totalFrames {
+            if linearProgress >= 1 {
                 self.navigationAnimationTimer?.invalidate()
                 self.navigationAnimationTimer = nil
                 self.cursorPosition = endPosition
@@ -442,9 +447,6 @@ struct BlueCursorView: View {
                 onComplete()
                 return
             }
-
-            // Linear progress 0→1 over the flight duration
-            let linearProgress = Double(currentFrame) / Double(totalFrames)
 
             // Smoothstep easeInOut: 3t² - 2t³ (Hermite interpolation)
             let t = linearProgress * linearProgress * (3.0 - 2.0 * linearProgress)
@@ -475,6 +477,8 @@ struct BlueCursorView: View {
             let scalePulse = sin(linearProgress * .pi)
             self.buddyFlightScale = 1.0 + scalePulse * 0.3
         }
+        navigationAnimationTimer = navigationTimer
+        RunLoop.main.add(navigationTimer, forMode: .common)
     }
 
     /// Transitions to pointing mode — shows a speech bubble with a bouncy

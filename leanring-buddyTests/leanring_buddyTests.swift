@@ -746,7 +746,22 @@ struct leanring_buddyTests {
         #expect(CompanionAnimationCadencePolicy.framesPerSecond(
             voiceState: .idle,
             navigationMode: .navigatingToTarget
-        ) == 30)
+        ) == 60)
+    }
+
+    @Test func navigationFlightUsesSmoothTimeBasedProgress() async throws {
+        #expect(CompanionAnimationCadencePolicy.navigationFlightFramesPerSecond == 60)
+        #expect(CompanionAnimationCadencePolicy.navigationFlightDuration(forDistance: 0) == 0.6)
+        #expect(CompanionAnimationCadencePolicy.navigationFlightDuration(forDistance: 800) == 1.0)
+        #expect(CompanionAnimationCadencePolicy.navigationFlightDuration(forDistance: 2_000) == 1.4)
+        #expect(CompanionAnimationCadencePolicy.navigationFlightProgress(
+            elapsedTime: 0.5,
+            duration: 1.0
+        ) == 0.5)
+        #expect(CompanionAnimationCadencePolicy.navigationFlightProgress(
+            elapsedTime: 2.0,
+            duration: 1.0
+        ) == 1.0)
     }
 
     @Test func activeScreenSelectionReturnsOnlyTheScreenContainingTheMouse() async throws {

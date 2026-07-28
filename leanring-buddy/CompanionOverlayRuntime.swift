@@ -10,13 +10,15 @@ import Combine
 import Foundation
 
 enum CompanionAnimationCadencePolicy {
+    static let navigationFlightFramesPerSecond = 60.0
+
     static func framesPerSecond(
         voiceState: CompanionVoiceState,
         navigationMode: BuddyNavigationMode
     ) -> Double? {
         switch navigationMode {
         case .navigatingToTarget:
-            return 30
+            return navigationFlightFramesPerSecond
         case .pointingAtTarget:
             return 24
         case .followingCursor:
@@ -31,6 +33,18 @@ enum CompanionAnimationCadencePolicy {
         case .processing:
             return 12
         }
+    }
+
+    static func navigationFlightDuration(forDistance distance: CGFloat) -> TimeInterval {
+        min(max(TimeInterval(distance / 800.0), 0.6), 1.4)
+    }
+
+    static func navigationFlightProgress(
+        elapsedTime: TimeInterval,
+        duration: TimeInterval
+    ) -> Double {
+        guard duration > 0 else { return 1 }
+        return min(max(elapsedTime / duration, 0), 1)
     }
 }
 
