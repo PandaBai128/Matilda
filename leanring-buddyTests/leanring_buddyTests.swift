@@ -500,6 +500,44 @@ struct leanring_buddyTests {
         cursorTracker.stop()
     }
 
+    @Test func delayedDictationIdleCannotHideAnActiveProcessingResponse() {
+        let previousAutoHideEnabled = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideEnabled")
+        let previousAutoHideDelay = UserDefaults.standard.object(forKey: "zhuangzhuangAutoHideDelaySeconds")
+        defer {
+            restoreUserDefaultsValue(previousAutoHideEnabled, forKey: "zhuangzhuangAutoHideEnabled")
+            restoreUserDefaultsValue(previousAutoHideDelay, forKey: "zhuangzhuangAutoHideDelaySeconds")
+        }
+
+        let companionManager = CompanionManager()
+        companionManager.setCompanionAutoHideEnabled(true)
+        companionManager.setCompanionAutoHideDelaySeconds(5)
+        let testScheduler = TestCompanionAutoHideScheduler()
+        let cursorTracker = CompanionCursorTracker(
+            screenFrames: [CGRect(x: -10_000, y: -10_000, width: 20_000, height: 20_000)],
+            companionManager: companionManager,
+            startsEventMonitoring: false,
+            autoHideScheduler: testScheduler.schedule
+        )
+        let responseIdentifier = UUID()
+        companionManager.beginResponseInteraction(responseTaskIdentifier: responseIdentifier)
+
+        companionManager.applyDictationVoiceActivity(
+            isRecording: false,
+            isFinalizing: false,
+            isPreparing: false
+        )
+        testScheduler.advance(by: 5)
+
+        #expect(companionManager.voiceState == .processing)
+        #expect(cursorTracker.autoHideStateSnapshot.blockerReason == .interactionActive)
+        #expect(!cursorTracker.isHiddenForInactivity)
+        companionManager.completeResponseInteraction(
+            responseTaskIdentifier: responseIdentifier,
+            reason: .cancelled
+        )
+        cursorTracker.stop()
+    }
+
     @Test func playbackDrainTimesOutWhenPlayerNeverCompletes() async {
         let result = await CompanionPlaybackDrainMonitor.waitUntilFinished(
             maximumWaitSeconds: 1,

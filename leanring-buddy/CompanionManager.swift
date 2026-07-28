@@ -760,30 +760,38 @@ final class CompanionManager: ObservableObject {
             )
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isRecording, isFinalizing, isPreparing in
-                guard let self else { return }
-                // Don't override .responding — the AI response pipeline
-                // manages that state directly until streaming finishes.
-                guard self.voiceState != .responding else { return }
-
-                if isFinalizing {
-                    self.voiceState = .processing
-                } else if isRecording {
-                    self.voiceState = .listening
-                } else if isPreparing {
-                    self.voiceState = .processing
-                } else {
-                    self.voiceState = .idle
-                    // If the user pressed and released the hotkey without
-                    // saying anything, no response task runs — schedule the
-                    // transient hide here so the overlay doesn't get stuck.
-                    // Only do this when no response is in flight, otherwise
-                    // the brief idle gap between recording and processing
-                    // would prematurely hide the overlay.
-                    if self.currentResponseTask == nil {
-                        self.scheduleTransientHideIfNeeded()
-                    }
-                }
+                self?.applyDictationVoiceActivity(
+                    isRecording: isRecording,
+                    isFinalizing: isFinalizing,
+                    isPreparing: isPreparing
+                )
             }
+    }
+
+    func applyDictationVoiceActivity(
+        isRecording: Bool,
+        isFinalizing: Bool,
+        isPreparing: Bool
+    ) {
+        // Dictation publishes its reset asynchronously. Once a response has
+        // started, that delayed idle value must not override processing or
+        // responding and restart the auto-hide countdown mid-interaction.
+        guard activeResponseInteractionIdentifier == nil else { return }
+
+        if isFinalizing {
+            voiceState = .processing
+        } else if isRecording {
+            voiceState = .listening
+        } else if isPreparing {
+            voiceState = .processing
+        } else {
+            voiceState = .idle
+            // If the user pressed and released the hotkey without saying
+            // anything, no response task runs — schedule the transient hide.
+            if currentResponseTask == nil {
+                scheduleTransientHideIfNeeded()
+            }
+        }
     }
 
     private func bindShortcutTransitions() {
