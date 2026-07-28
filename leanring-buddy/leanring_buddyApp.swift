@@ -30,6 +30,8 @@ struct leanring_buddyApp: App {
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
+    private let codexUsageMonitor = CodexUsageMonitor()
+    private let codexUsageSettings = CodexUsageSettings()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🎯 Matilda: Starting...")
@@ -37,8 +39,13 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
+        menuBarPanelManager = MenuBarPanelManager(
+            companionManager: companionManager,
+            usageMonitor: codexUsageMonitor,
+            usageSettings: codexUsageSettings
+        )
         companionManager.start()
+        codexUsageMonitor.start()
         // Auto-open the panel when required permissions are missing.
         if !companionManager.allPermissionsGranted {
             menuBarPanelManager?.showPanelOnLaunch()
@@ -47,6 +54,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        codexUsageMonitor.stop()
         companionManager.stop()
     }
 

@@ -21,30 +21,33 @@ struct CompanionPanelView: View {
                 .background(DS.Colors.borderSubtle)
                 .padding(.horizontal, 16)
 
-            permissionsCopySection
-                .padding(.top, 16)
-                .padding(.horizontal, 16)
-
-            companionAppearanceSection
-                .padding(.horizontal, 16)
-
             if companionManager.allPermissionsGranted {
+                voiceInputShortcutRow
+                    .padding(.top, 12)
+                    .padding(.horizontal, 16)
+
                 Spacer()
                     .frame(height: 12)
 
-                modelPickerRow
-                    .padding(.horizontal, 16)
-
-                responseLengthRow
-                    .padding(.horizontal, 16)
-
-                voiceSettingsSection
+                sectionLabel("COMPANION")
                     .padding(.horizontal, 16)
 
                 Spacer()
-                    .frame(height: 10)
+                    .frame(height: 6)
 
-                voiceInputButton
+                companionAppearanceSection
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 12)
+
+                sectionLabel("RESPONSE")
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 6)
+
+                responseSettingsSection
                     .padding(.horizontal, 16)
 
                 Spacer()
@@ -52,9 +55,11 @@ struct CompanionPanelView: View {
 
                 conversationHistorySection
                     .padding(.horizontal, 16)
-            }
+            } else {
+                permissionsCopySection
+                    .padding(.top, 16)
+                    .padding(.horizontal, 16)
 
-            if !companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 16)
 
@@ -80,6 +85,14 @@ struct CompanionPanelView: View {
                 companionManager.loadAvailableTTSVoices()
             }
         }
+    }
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundColor(DS.Colors.textTertiary)
+            .tracking(0.35)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Header
@@ -460,69 +473,88 @@ struct CompanionPanelView: View {
     // MARK: - Companion Appearance
 
     private var companionAppearanceSection: some View {
-        VStack(spacing: 8) {
-            HStack {
-                HStack(spacing: 8) {
-                    Image(systemName: "pawprint.fill")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(DS.Colors.textTertiary)
-                        .frame(width: 16)
+        VStack(spacing: 0) {
+            companionVisibilityRow
 
-                    Text("Show 壮壮")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(DS.Colors.textSecondary)
-                }
+            Divider().background(DS.Colors.borderSubtle)
 
-                Spacer()
-
-                Toggle("", isOn: Binding(
-                    get: { companionManager.isClickyCursorEnabled },
-                    set: { companionManager.setClickyCursorEnabled($0) }
-                ))
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .tint(DS.Colors.accent)
-                .scaleEffect(0.8)
-                .disabled(!companionManager.allPermissionsGranted)
-                .opacity(companionManager.allPermissionsGranted ? 1 : 0.45)
-                .pointerCursor(isEnabled: companionManager.allPermissionsGranted)
-            }
-
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Appearance")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(DS.Colors.textSecondary)
-
-                    Text("\(companionManager.companionAvatarSize.displayName) · \(companionManager.companionCursorDistance.displayName)")
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-
-                Spacer()
-
-                Button(action: {
-                    NotificationCenter.default.post(name: .clickyShowAppearanceSettings, object: nil)
-                }) {
-                    Image(systemName: "paintpalette.fill")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(DS.Colors.textSecondary)
-                        .frame(width: 30, height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.white.opacity(0.06))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .help("Appearance settings")
-            }
+            companionAppearanceRow
         }
-        .padding(.vertical, 4)
+        .background(DS.Colors.surface1)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+        )
+    }
+
+    private var companionVisibilityRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "pawprint.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Show 壮壮")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isClickyCursorEnabled },
+                set: { companionManager.setClickyCursorEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+            .disabled(!companionManager.allPermissionsGranted)
+            .opacity(companionManager.allPermissionsGranted ? 1 : 0.45)
+            .pointerCursor(isEnabled: companionManager.allPermissionsGranted)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 42)
+    }
+
+    private var companionAppearanceRow: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Appearance")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Text("\(companionManager.companionAvatarSize.displayName) · \(companionManager.companionCursorDistance.displayName)")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            Spacer()
+
+            Button(action: {
+                NotificationCenter.default.post(name: .clickyShowAppearanceSettings, object: nil)
+            }) {
+                Image(systemName: "paintpalette.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .frame(width: 30, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .help("Appearance settings")
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
     }
 
     private var speechToTextProviderRow: some View {
@@ -549,6 +581,26 @@ struct CompanionPanelView: View {
 
     // MARK: - Model Picker
 
+    private var responseSettingsSection: some View {
+        VStack(spacing: 0) {
+            modelPickerRow
+
+            Divider().background(DS.Colors.borderSubtle)
+
+            responseLengthRow
+
+            Divider().background(DS.Colors.borderSubtle)
+
+            voiceSettingsSection
+        }
+        .background(DS.Colors.surface1)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+        )
+    }
+
     private var modelPickerRow: some View {
         HStack {
             Text("Model")
@@ -569,7 +621,8 @@ struct CompanionPanelView: View {
                     .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 42)
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {
@@ -593,7 +646,7 @@ struct CompanionPanelView: View {
 
     private var responseLengthRow: some View {
         HStack {
-            Text("Response")
+            Text("Length")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
 
@@ -613,7 +666,8 @@ struct CompanionPanelView: View {
                     .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 42)
     }
 
     private func responseLengthButton(_ responseLength: CompanionResponseLength) -> some View {
@@ -640,12 +694,12 @@ struct CompanionPanelView: View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Voice")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundColor(DS.Colors.textTertiary)
-
-                Text(companionManager.selectedTTSVoiceDisplayName)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
+
+                Text(companionManager.selectedTTSVoiceDisplayName)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
                     .lineLimit(1)
             }
 
@@ -671,34 +725,90 @@ struct CompanionPanelView: View {
             .pointerCursor()
             .help("Voice settings")
         }
-        .padding(.top, 6)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
     }
 
-    private var voiceInputButton: some View {
+    @ViewBuilder
+    private var voiceInputShortcutRow: some View {
         let isActive = companionManager.buddyDictationManager.isDictationInProgress
             || companionManager.buddyDictationManager.isPreparingToRecord
 
-        return Button(action: {
-            companionManager.togglePanelVoiceInput()
-        }) {
-            HStack(spacing: 8) {
-                Image(systemName: isActive ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 16)
+        if isActive {
+            Button(action: companionManager.togglePanelVoiceInput) {
+                HStack(spacing: 8) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 15)
 
-                Text(isActive ? "Stop and send" : "Talk")
-                    .font(.system(size: 13, weight: .semibold))
+                    Text("Listening…")
+                        .font(.system(size: 12, weight: .semibold))
+
+                    Spacer()
+
+                    Text("Stop and send")
+                        .font(.system(size: 10, weight: .medium))
+                        .opacity(0.8)
+                }
+                .foregroundColor(DS.Colors.textOnAccent)
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(DS.Colors.accent)
+                )
             }
-            .foregroundColor(DS.Colors.textOnAccent)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 9)
+            .buttonStyle(.plain)
+            .pointerCursor()
+        } else {
+            HStack(spacing: 7) {
+                shortcutKey("⌃")
+                shortcutKey("⌥")
+
+                Text("Hold to talk")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                Button(action: companionManager.togglePanelVoiceInput) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color.white.opacity(0.07)))
+                        .overlay(Circle().stroke(DS.Colors.borderSubtle, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .help("Talk")
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 36)
             .background(
-                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                    .fill(isActive ? DS.Colors.warning : DS.Colors.accent)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(0.035))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
         }
-        .buttonStyle(.plain)
-        .pointerCursor()
+    }
+
+    private func shortcutKey(_ label: String) -> some View {
+        Text(label)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundColor(DS.Colors.textSecondary)
+            .frame(width: 24, height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(DS.Colors.surface2)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.6)
+            )
     }
 
     // MARK: - Conversation History
@@ -745,7 +855,7 @@ struct CompanionPanelView: View {
                     }
                     .padding(.trailing, 2)
                 }
-                .frame(maxHeight: 220)
+                .frame(maxHeight: 180)
             }
         }
     }
@@ -771,12 +881,12 @@ struct CompanionPanelView: View {
             Spacer()
 
             Button(action: {
-                NotificationCenter.default.post(name: .clickyShowVoiceSettings, object: nil)
+                NotificationCenter.default.post(name: .clickyShowCodexUsageSettings, object: nil)
             }) {
                 HStack(spacing: 6) {
-                    Image(systemName: "waveform")
+                    Image(systemName: "gauge.with.dots.needle.33percent")
                         .font(.system(size: 11, weight: .medium))
-                    Text("Voice Settings")
+                    Text("Codex Usage")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundColor(DS.Colors.textTertiary)

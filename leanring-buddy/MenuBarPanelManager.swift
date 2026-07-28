@@ -12,12 +12,14 @@
 //
 
 import AppKit
+import Combine
 import SwiftUI
 
 extension Notification.Name {
     static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
     static let clickyShowVoiceSettings = Notification.Name("clickyShowVoiceSettings")
     static let clickyShowAppearanceSettings = Notification.Name("clickyShowAppearanceSettings")
+    static let clickyShowCodexUsageSettings = Notification.Name("clickyShowCodexUsageSettings")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -26,27 +28,48 @@ private class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+private final class PassthroughStatusHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 @MainActor
 final class MenuBarPanelManager: NSObject {
     private var statusItem: NSStatusItem?
+    private var statusItemHostingView: NSView?
     private var panel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
     private var showVoiceSettingsObserver: NSObjectProtocol?
     private var showAppearanceSettingsObserver: NSObjectProtocol?
+    private var showCodexUsageSettingsObserver: NSObjectProtocol?
+    private var statusItemSubscriptions = Set<AnyCancellable>()
 
     private let companionManager: CompanionManager
+    private let usageMonitor: CodexUsageMonitor
+    private let usageSettings: CodexUsageSettings
     private let voiceSettingsWindowManager: VoiceSettingsWindowManager
     private let appearanceSettingsWindowManager: AppearanceSettingsWindowManager
+    private let codexUsageSettingsWindowManager: CodexUsageSettingsWindowManager
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 380
 
-    init(companionManager: CompanionManager) {
+    init(
+        companionManager: CompanionManager,
+        usageMonitor: CodexUsageMonitor,
+        usageSettings: CodexUsageSettings
+    ) {
         self.companionManager = companionManager
+        self.usageMonitor = usageMonitor
+        self.usageSettings = usageSettings
         self.voiceSettingsWindowManager = VoiceSettingsWindowManager(companionManager: companionManager)
         self.appearanceSettingsWindowManager = AppearanceSettingsWindowManager(companionManager: companionManager)
+        self.codexUsageSettingsWindowManager = CodexUsageSettingsWindowManager(
+            usageMonitor: usageMonitor,
+            usageSettings: usageSettings
+        )
         super.init()
         createStatusItem()
+        observeStatusItemPresentation()
 
         dismissPanelObserver = NotificationCenter.default.addObserver(
             forName: .clickyDismissPanel,
@@ -75,6 +98,17 @@ final class MenuBarPanelManager: NSObject {
                 self?.appearanceSettingsWindowManager.showWindow()
             }
         }
+
+        showCodexUsageSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .clickyShowCodexUsageSettings,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.hidePanel()
+                self?.codexUsageSettingsWindowManager.showWindow()
+            }
+        }
     }
 
     deinit {
@@ -90,6 +124,9 @@ final class MenuBarPanelManager: NSObject {
         if let observer = showAppearanceSettingsObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = showCodexUsageSettingsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     // MARK: - Status Item
@@ -99,21 +136,68 @@ final class MenuBarPanelManager: NSObject {
 
         guard let button = statusItem?.button else { return }
 
-        button.image = makeZhuangzhuangMenuBarIcon()
-        button.imageScaling = .scaleProportionallyDown
         button.action = #selector(statusItemClicked)
         button.target = self
+        refreshStatusItemPresentation()
     }
 
-    private func makeZhuangzhuangMenuBarIcon() -> NSImage? {
-        guard let sourceImage = NSImage(named: "ZhuangzhuangMenuIcon"),
-              let menuBarImage = sourceImage.copy() as? NSImage else {
-            return nil
+    private func observeStatusItemPresentation() {
+        Publishers.MergeMany(
+            usageMonitor.$snapshot.map { _ in () }.eraseToAnyPublisher(),
+            usageSettings.$isMenuBarUsageVisible.map { _ in () }.eraseToAnyPublisher(),
+            usageSettings.$isWeeklyLimitVisible.map { _ in () }.eraseToAnyPublisher(),
+            usageSettings.$isFiveHourLimitVisible.map { _ in () }.eraseToAnyPublisher(),
+            usageSettings.$showsResetCountdownWhenExhausted.map { _ in () }.eraseToAnyPublisher()
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in
+            self?.refreshStatusItemPresentation()
+        }
+        .store(in: &statusItemSubscriptions)
+    }
+
+    private func refreshStatusItemPresentation() {
+        guard let statusItem, let button = statusItem.button else { return }
+
+        let visibleLimitCount = menuBarVisibleLimitCount
+        switch visibleLimitCount {
+        case 1:
+            statusItem.length = 76
+        case 2:
+            statusItem.length = 126
+        default:
+            statusItem.length = NSStatusItem.squareLength
         }
 
-        menuBarImage.size = NSSize(width: 18, height: 18)
-        menuBarImage.isTemplate = false
-        return menuBarImage
+        button.image = nil
+        statusItemHostingView?.removeFromSuperview()
+
+        let statusContent = CodexUsageMenuBarContent(
+            usageMonitor: usageMonitor,
+            usageSettings: usageSettings
+        )
+        let hostingView = PassthroughStatusHostingView(rootView: statusContent)
+        hostingView.frame = button.bounds
+        hostingView.autoresizingMask = [.width, .height]
+        button.addSubview(hostingView)
+        statusItemHostingView = hostingView
+    }
+
+    private var menuBarVisibleLimitCount: Int {
+        guard usageSettings.isMenuBarUsageVisible,
+              let snapshot = usageMonitor.snapshot
+        else {
+            return 0
+        }
+
+        var visibleLimitCount = 0
+        if usageSettings.isWeeklyLimitVisible, snapshot.weeklyLimit != nil {
+            visibleLimitCount += 1
+        }
+        if usageSettings.isFiveHourLimitVisible, snapshot.fiveHourLimit != nil {
+            visibleLimitCount += 1
+        }
+        return visibleLimitCount
     }
 
     /// Opens the panel automatically on app launch so the user sees
@@ -136,6 +220,10 @@ final class MenuBarPanelManager: NSObject {
     // MARK: - Panel Lifecycle
 
     private func showPanel() {
+        if usageMonitor.isSnapshotStale() {
+            Task { await usageMonitor.refresh() }
+        }
+
         if panel == nil {
             createPanel()
         }
@@ -248,5 +336,66 @@ final class MenuBarPanelManager: NSObject {
             NSEvent.removeMonitor(monitor)
             clickOutsideMonitor = nil
         }
+    }
+}
+
+private struct CodexUsageMenuBarContent: View {
+    @ObservedObject var usageMonitor: CodexUsageMonitor
+    @ObservedObject var usageSettings: CodexUsageSettings
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { timelineContext in
+            HStack(spacing: 7) {
+                Image("ZhuangzhuangMenuIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 18, height: 18)
+
+                if usageSettings.isMenuBarUsageVisible,
+                   let snapshot = usageMonitor.snapshot {
+                    if usageSettings.isWeeklyLimitVisible,
+                       let weeklyLimit = snapshot.weeklyLimit {
+                        usageColumn(
+                            quotaWindow: weeklyLimit,
+                            label: "WEEK",
+                            currentDate: timelineContext.date
+                        )
+                    }
+
+                    if usageSettings.isFiveHourLimitVisible,
+                       let fiveHourLimit = snapshot.fiveHourLimit {
+                        usageColumn(
+                            quotaWindow: fiveHourLimit,
+                            label: "5 HR",
+                            currentDate: timelineContext.date
+                        )
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func usageColumn(
+        quotaWindow: CodexQuotaWindow,
+        label: String,
+        currentDate: Date
+    ) -> some View {
+        VStack(spacing: -1) {
+            Text(CodexUsageFormatting.menuValue(
+                for: quotaWindow,
+                showsResetCountdownWhenExhausted: usageSettings.showsResetCountdownWhenExhausted,
+                currentDate: currentDate
+            ))
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+
+            Text(label)
+                .font(.system(size: 7, weight: .bold, design: .rounded))
+                .tracking(0.35)
+        }
+        .foregroundStyle(Color.primary)
+        .frame(minWidth: 34)
     }
 }
