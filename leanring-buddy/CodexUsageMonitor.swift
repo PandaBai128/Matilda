@@ -32,7 +32,10 @@ final class CodexUsageMonitor: ObservableObject {
     private let fetchSnapshot: FetchSnapshot
     private let saveSnapshot: SaveSnapshot
     private let usageSettings: CodexUsageSettings
-    private var periodicRefreshTask: Task<Void, Never>?
+    private var refreshScheduleTask: Task<Void, Never>?
+    private var inFlightRefreshTask: Task<Void, Never>?
+    private var inFlightRefreshIdentifier: UUID?
+    private var snapshotExpirationTask: Task<Void, Never>?
     private var workspaceWakeObserver: NSObjectProtocol?
     private var refreshFrequencySubscription: AnyCancellable?
     private var lastUserInteractionDate: Date?
@@ -79,7 +82,9 @@ final class CodexUsageMonitor: ObservableObject {
     }
 
     deinit {
-        periodicRefreshTask?.cancel()
+        refreshScheduleTask?.cancel()
+        inFlightRefreshTask?.cancel()
+        snapshotExpirationTask?.cancel()
         if let workspaceWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceWakeObserver)
         }
@@ -93,11 +98,13 @@ final class CodexUsageMonitor: ObservableObject {
             .dropFirst()
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.restartPeriodicRefreshLoop(refreshesImmediately: false)
+                    self?.restartRefreshSchedule(refreshesImmediately: false)
                 }
             }
 
-        restartPeriodicRefreshLoop(refreshesImmediately: true)
+        removeExpiredQuotaWindows()
+        scheduleSnapshotExpiration()
+        restartRefreshSchedule(refreshesImmediately: true)
 
         workspaceWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
@@ -105,16 +112,22 @@ final class CodexUsageMonitor: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                guard self?.isStarted == true else { return }
                 await self?.refresh()
-                self?.restartPeriodicRefreshLoop(refreshesImmediately: false)
+                self?.restartRefreshSchedule(refreshesImmediately: false)
             }
         }
     }
 
     func stop() {
         isStarted = false
-        periodicRefreshTask?.cancel()
-        periodicRefreshTask = nil
+        refreshScheduleTask?.cancel()
+        refreshScheduleTask = nil
+        inFlightRefreshTask?.cancel()
+        inFlightRefreshTask = nil
+        inFlightRefreshIdentifier = nil
+        snapshotExpirationTask?.cancel()
+        snapshotExpirationTask = nil
         refreshFrequencySubscription?.cancel()
         refreshFrequencySubscription = nil
 
@@ -125,18 +138,42 @@ final class CodexUsageMonitor: ObservableObject {
     }
 
     func refresh() async {
-        guard refreshState != .refreshing else { return }
+        if let inFlightRefreshTask {
+            await inFlightRefreshTask.value
+            return
+        }
+
+        let refreshIdentifier = UUID()
+        let refreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.performRefresh()
+        }
+        inFlightRefreshIdentifier = refreshIdentifier
+        inFlightRefreshTask = refreshTask
+        await refreshTask.value
+
+        if inFlightRefreshIdentifier == refreshIdentifier {
+            inFlightRefreshTask = nil
+            inFlightRefreshIdentifier = nil
+        }
+    }
+
+    private func performRefresh() async {
         refreshState = .refreshing
         errorMessage = nil
 
         do {
             let refreshedSnapshot = try await fetchSnapshot()
+            try Task.checkCancellation()
             snapshot = refreshedSnapshot
             saveSnapshot(refreshedSnapshot)
+            scheduleSnapshotExpiration()
             refreshState = .loaded
         } catch is CancellationError {
+            removeExpiredQuotaWindows()
             refreshState = snapshot == nil ? .idle : .loaded
         } catch {
+            removeExpiredQuotaWindows()
             refreshState = .failed
             errorMessage = Self.errorMessage(for: error)
         }
@@ -150,7 +187,7 @@ final class CodexUsageMonitor: ObservableObject {
     func noteUserInteraction(at interactionDate: Date = Date()) {
         lastUserInteractionDate = interactionDate
         if isStarted, usageSettings.refreshFrequency == .adaptive {
-            restartPeriodicRefreshLoop(refreshesImmediately: false)
+            restartRefreshSchedule(refreshesImmediately: false)
         }
     }
 
@@ -166,10 +203,37 @@ final class CodexUsageMonitor: ObservableObject {
         )
     }
 
-    private func restartPeriodicRefreshLoop(refreshesImmediately: Bool) {
+    func removeExpiredQuotaWindows(at currentDate: Date = Date()) {
+        guard let snapshot else { return }
+
+        let activeFiveHourLimit = snapshot.fiveHourLimit.flatMap {
+            $0.resetsAt > currentDate ? $0 : nil
+        }
+        let activeWeeklyLimit = snapshot.weeklyLimit.flatMap {
+            $0.resetsAt > currentDate ? $0 : nil
+        }
+        guard activeFiveHourLimit != snapshot.fiveHourLimit
+                || activeWeeklyLimit != snapshot.weeklyLimit
+        else {
+            return
+        }
+
+        if activeFiveHourLimit == nil, activeWeeklyLimit == nil {
+            self.snapshot = nil
+        } else {
+            self.snapshot = CodexUsageSnapshot(
+                fiveHourLimit: activeFiveHourLimit,
+                weeklyLimit: activeWeeklyLimit,
+                refreshedAt: snapshot.refreshedAt
+            )
+        }
+        scheduleSnapshotExpiration()
+    }
+
+    private func restartRefreshSchedule(refreshesImmediately: Bool) {
         guard isStarted else { return }
-        periodicRefreshTask?.cancel()
-        periodicRefreshTask = Task { [weak self] in
+        refreshScheduleTask?.cancel()
+        refreshScheduleTask = Task { [weak self] in
             if refreshesImmediately {
                 await self?.refresh()
             }
@@ -187,6 +251,29 @@ final class CodexUsageMonitor: ObservableObject {
                 guard !Task.isCancelled else { return }
                 await self?.refresh()
             }
+        }
+    }
+
+    private func scheduleSnapshotExpiration() {
+        snapshotExpirationTask?.cancel()
+        snapshotExpirationTask = nil
+
+        guard isStarted,
+              let nextExpirationDate = snapshot?.availableLimits.map(\.resetsAt).min()
+        else {
+            return
+        }
+
+        snapshotExpirationTask = Task { [weak self] in
+            let delaySeconds = max(0, nextExpirationDate.timeIntervalSinceNow)
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+            self?.removeExpiredQuotaWindows()
         }
     }
 

@@ -13,6 +13,13 @@ final class CodexUsageSettingsWindowManager {
     }
 
     func showWindow() {
+        usageMonitor.noteUserInteraction()
+        if usageMonitor.isSnapshotStale() {
+            Task { [weak usageMonitor] in
+                await usageMonitor?.refresh()
+            }
+        }
+
         if window == nil {
             createWindow()
             window?.center()

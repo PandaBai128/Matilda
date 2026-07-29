@@ -114,6 +114,68 @@ struct CodexUsageTests {
         #expect(monitor.errorMessage == nil)
     }
 
+    @Test func reschedulingThePollingLoopDoesNotCancelAnInFlightRefresh() async {
+        let expectedSnapshot = CodexUsageSnapshot(
+            fiveHourLimit: nil,
+            weeklyLimit: CodexQuotaWindow(
+                usedPercent: 4,
+                remainingPercent: 96,
+                resetsAt: Date(timeIntervalSince1970: 1_785_838_062),
+                durationSeconds: CodexUsageSnapshot.weeklyDurationSeconds
+            ),
+            refreshedAt: Date(timeIntervalSince1970: 1_785_000_000)
+        )
+        let controlledFetcher = ControlledCodexUsageSnapshotFetcher()
+        let monitor = CodexUsageMonitor(fetchSnapshot: {
+            try await controlledFetcher.fetchSnapshot()
+        })
+
+        monitor.start()
+        while !(await controlledFetcher.hasStartedFetching) {
+            await Task.yield()
+        }
+
+        monitor.noteUserInteraction()
+        await controlledFetcher.complete(with: expectedSnapshot)
+
+        while monitor.refreshState == .refreshing {
+            await Task.yield()
+        }
+
+        #expect(monitor.snapshot == expectedSnapshot)
+        #expect(await controlledFetcher.wasCancelled == false)
+        monitor.stop()
+    }
+
+    @Test func expiredQuotaWindowsAreRemovedWhileTheAppKeepsRunning() {
+        let currentDate = Date(timeIntervalSince1970: 1_785_000_000)
+        let activeFiveHourLimit = CodexQuotaWindow(
+            usedPercent: 20,
+            remainingPercent: 80,
+            resetsAt: currentDate.addingTimeInterval(60),
+            durationSeconds: CodexUsageSnapshot.fiveHourDurationSeconds
+        )
+        let expiredWeeklyLimit = CodexQuotaWindow(
+            usedPercent: 40,
+            remainingPercent: 60,
+            resetsAt: currentDate,
+            durationSeconds: CodexUsageSnapshot.weeklyDurationSeconds
+        )
+        let monitor = CodexUsageMonitor(
+            fetchSnapshot: { throw CodexUsageError.networkUnavailable },
+            initialSnapshot: CodexUsageSnapshot(
+                fiveHourLimit: activeFiveHourLimit,
+                weeklyLimit: expiredWeeklyLimit,
+                refreshedAt: currentDate.addingTimeInterval(-60)
+            )
+        )
+
+        monitor.removeExpiredQuotaWindows(at: currentDate)
+
+        #expect(monitor.snapshot?.fiveHourLimit == activeFiveHourLimit)
+        #expect(monitor.snapshot?.weeklyLimit == nil)
+    }
+
     @Test func weeklyOnlyResponseShowsWeeklyRemainingWithoutInventingFiveHourLimit() throws {
         let responseData = Data(
             """
@@ -218,5 +280,33 @@ struct CodexUsageTests {
             showsResetCountdownWhenExhausted: false,
             currentDate: currentDate
         ) == "0%")
+    }
+}
+
+private actor ControlledCodexUsageSnapshotFetcher {
+    private var continuation: CheckedContinuation<CodexUsageSnapshot, Error>?
+    private(set) var hasStartedFetching = false
+    private(set) var wasCancelled = false
+
+    func fetchSnapshot() async throws -> CodexUsageSnapshot {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                hasStartedFetching = true
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func complete(with snapshot: CodexUsageSnapshot) {
+        continuation?.resume(returning: snapshot)
+        continuation = nil
+    }
+
+    private func cancel() {
+        wasCancelled = true
+        continuation?.resume(throwing: CancellationError())
+        continuation = nil
     }
 }

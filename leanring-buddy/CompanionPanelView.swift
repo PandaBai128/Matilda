@@ -884,7 +884,7 @@ struct CompanionPanelView: View {
                 NotificationCenter.default.post(name: .clickyShowCodexUsageSettings, object: nil)
             }) {
                 HStack(spacing: 6) {
-                    CodexUsageGlyph(color: DS.Colors.textTertiary)
+                    CodexUsageGlyph()
                         .frame(width: 16, height: 13)
                     Text("Codex Usage")
                         .font(.system(size: 12, weight: .medium))

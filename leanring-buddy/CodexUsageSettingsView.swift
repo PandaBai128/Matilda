@@ -20,14 +20,6 @@ struct CodexUsageSettingsView: View {
             }
         }
         .background(DS.Colors.background)
-        .onAppear {
-            usageMonitor.noteUserInteraction()
-        }
-        .task {
-            if usageMonitor.isSnapshotStale() {
-                await usageMonitor.refresh()
-            }
-        }
     }
 
     private var header: some View {
@@ -130,40 +122,45 @@ struct CodexUsageSettingsView: View {
             if let snapshot = usageMonitor.snapshot,
                snapshot.weeklyLimit != nil || snapshot.fiveHourLimit != nil {
                 TimelineView(.periodic(from: .now, by: 60)) { timelineContext in
-                    VStack(spacing: 0) {
-                        if let weeklyLimit = snapshot.weeklyLimit {
-                            usageRow(
-                                title: "Weekly limit",
-                                shortLabel: "WEEK",
-                                quotaWindow: weeklyLimit,
-                                currentDate: timelineContext.date
-                            )
-                        }
+                    VStack(alignment: .leading, spacing: 8) {
+                        VStack(spacing: 0) {
+                            if let weeklyLimit = snapshot.weeklyLimit {
+                                usageRow(
+                                    title: "Weekly limit",
+                                    shortLabel: "WEEK",
+                                    quotaWindow: weeklyLimit,
+                                    currentDate: timelineContext.date
+                                )
+                            }
 
-                        if snapshot.weeklyLimit != nil, snapshot.fiveHourLimit != nil {
-                            Divider().background(DS.Colors.borderSubtle)
-                        }
+                            if snapshot.weeklyLimit != nil, snapshot.fiveHourLimit != nil {
+                                Divider().background(DS.Colors.borderSubtle)
+                            }
 
-                        if let fiveHourLimit = snapshot.fiveHourLimit {
-                            usageRow(
-                                title: "5-hour limit",
-                                shortLabel: "5 HR",
-                                quotaWindow: fiveHourLimit,
-                                currentDate: timelineContext.date
-                            )
+                            if let fiveHourLimit = snapshot.fiveHourLimit {
+                                usageRow(
+                                    title: "5-hour limit",
+                                    shortLabel: "5 HR",
+                                    quotaWindow: fiveHourLimit,
+                                    currentDate: timelineContext.date
+                                )
+                            }
                         }
+                        .background(DS.Colors.surface1)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                        )
+
+                        Text(CodexUsageFormatting.refreshDescription(
+                            refreshedAt: snapshot.refreshedAt,
+                            currentDate: timelineContext.date
+                        ))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
                     }
                 }
-                .background(DS.Colors.surface1)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                )
-
-                Text(CodexUsageFormatting.refreshDescription(refreshedAt: snapshot.refreshedAt))
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
             } else {
                 VStack(alignment: .leading, spacing: 7) {
                     Text(usageMonitor.errorMessage ?? "Open Codex once, then refresh to show your usage.")
