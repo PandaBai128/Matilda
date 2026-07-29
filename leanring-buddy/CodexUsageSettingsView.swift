@@ -12,6 +12,7 @@ struct CodexUsageSettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     currentUsageSection
+                    refreshSection
                     menuBarSection
                     privacyNote
                 }
@@ -19,6 +20,9 @@ struct CodexUsageSettingsView: View {
             }
         }
         .background(DS.Colors.background)
+        .onAppear {
+            usageMonitor.noteUserInteraction()
+        }
         .task {
             if usageMonitor.isSnapshotStale() {
                 await usageMonitor.refresh()
@@ -33,9 +37,8 @@ struct CodexUsageSettingsView: View {
                     .fill(DS.Colors.blue500.opacity(0.16))
                     .frame(width: 42, height: 42)
 
-                Image(systemName: "gauge.with.dots.needle.33percent")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(DS.Colors.blue400)
+                CodexUsageGlyph()
+                    .frame(width: 20, height: 18)
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -77,6 +80,46 @@ struct CodexUsageSettingsView: View {
         .padding(.horizontal, 24)
         .padding(.top, 30)
         .padding(.bottom, 18)
+    }
+
+    private var refreshSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("REFRESH")
+
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Refresh frequency")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Text(usageSettings.refreshFrequency.detailText)
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                Picker("Refresh frequency", selection: $usageSettings.refreshFrequency) {
+                    ForEach(CodexUsageRefreshFrequency.allCases) { refreshFrequency in
+                        Text(refreshFrequency.displayName)
+                            .tag(refreshFrequency)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 156)
+                .pointerCursor()
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 66)
+            .background(DS.Colors.surface1)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
     }
 
     @ViewBuilder
@@ -202,7 +245,7 @@ struct CodexUsageSettingsView: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
 
-            Text("Usage refreshes about every two minutes. Only the last successful usage snapshot is cached; Codex credentials remain in Codex's own local files.")
+            Text("Adaptive refresh slows from 2 to 30 minutes while idle. Only the last successful usage snapshot is cached; Codex credentials remain in Codex's own local files.")
                 .font(.system(size: 10))
                 .foregroundColor(DS.Colors.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)

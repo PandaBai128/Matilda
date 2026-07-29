@@ -30,8 +30,10 @@ struct leanring_buddyApp: App {
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
-    private let codexUsageMonitor = CodexUsageMonitor()
     private let codexUsageSettings = CodexUsageSettings()
+    private lazy var codexUsageMonitor = CodexUsageMonitor(
+        usageSettings: codexUsageSettings
+    )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🎯 Matilda: Starting...")

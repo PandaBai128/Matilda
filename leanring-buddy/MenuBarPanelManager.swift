@@ -220,6 +220,7 @@ final class MenuBarPanelManager: NSObject {
     // MARK: - Panel Lifecycle
 
     private func showPanel() {
+        usageMonitor.noteUserInteraction()
         if usageMonitor.isSnapshotStale() {
             Task { await usageMonitor.refresh() }
         }

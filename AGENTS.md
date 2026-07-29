@@ -19,7 +19,7 @@ API keys live in the proxy layer: `worker/.dev.vars` for local development or Cl
 - **Text-to-Speech**: MiniMax T2A via the proxy. LLM text is segmented at sentence boundaries as it streams; MiniMax audio frames are parsed incrementally and played through a cancellable Audio Queue before each MP3 finishes downloading.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
-- **Codex Usage**: A read-only local monitor uses the existing Codex OAuth sign-in to fetch the account usage snapshot about every two minutes. It caches only the last successful quota snapshot, never credentials, and keeps the last value visible when a refresh fails.
+- **Codex Usage**: A read-only local monitor uses the existing Codex OAuth sign-in to fetch the account usage snapshot. Adaptive refresh is the default: 2 minutes for recent interaction, then 5, 15, or 30 minutes as the app becomes idle; fixed 2/5/15/30-minute choices are persisted in settings. It caches only the last successful quota snapshot, never credentials, and keeps the last value visible when a refresh fails.
 - **Element Pointing**: The vision model embeds normalized `[POINT_V2:x,y:label:screenN]` tags using a fixed 0–1000 coordinate space. The overlay parses these, maps coordinates to the correct monitor, animates the Zhuangzhuang portrait along a bezier arc, and leaves the exact target visible under a blue pulse marker. Legacy `[POINT:...]` tags are stripped but never move the companion.
 - **Concurrency**: UI state is isolated to `@MainActor`. Streaming MP3 parsing and Audio Queue lifecycle work run on dedicated serial queues so playback and cancellation cannot block the menu bar UI. One event-driven cursor tracker is shared by all display overlays; its 60fps smoothing timer exists only while the mouse is moving and stops about 200ms after movement settles.
 
@@ -44,6 +44,8 @@ Optional proxy configuration: `MINIMAX_API_HOST`, `MINIMAX_CHAT_MODEL`, `MINIMAX
 
 **Codex Usage Visibility**: Codex usage is intentionally secondary to the companion. The menu bar shows only limits returned by Codex: currently the weekly window. Five-hour parsing and persistence are retained so the setting and second menu value appear automatically if that duration returns in the API; there must be no disabled toggle, empty column, or placeholder while it is absent. At zero remaining, an optional compact countdown replaces `0%`. Authentication is read from Codex's local `auth.json` without logging, copying, refreshing, or modifying the token. Refresh failures preserve the last successful non-expired snapshot.
 
+**Codex Usage Refresh**: Launch and wake perform an immediate refresh. Opening the companion panel or Codex Usage settings records interaction and moves Adaptive mode to its 2-minute tier; it then backs off to 5 minutes after 5 minutes, 15 minutes after 1 hour, and 30 minutes after 4 hours or when there has been no interaction. Low Power Mode and serious/critical thermal pressure use 30 minutes in Adaptive mode. Changing the persisted frequency restarts the sleeping schedule without producing an extra immediate request. Fixed choices remain fixed even under system constraints.
+
 **Companion Overlay**: A full-screen transparent `NSPanel` exists for each display, but all panels share one `CompanionCursorTracker`. Global and local mouse events select the active display; only that display mounts the portrait animation subtree. Fast follows events directly, while Medium and Slow use one short-lived 60fps interpolation timer that stops about 200ms after movement settles. Idle and responding have no permanent timeline: a sleeping task wakes only for a brief natural blink. Listening runs at 24fps, processing and the target marker at 12fps, and pointing at 24fps; flight uses a short-lived 60fps timer. Event-driven auto-hide consumes the values emitted by the combined voice, pointing, enabled, and delay publishers, cancels and reschedules one delayed task, then removes the portrait subtree instead of leaving transparent animation running. Natural blinking and barking use transparent expression frames derived from the approved portrait. Persisted settings control size, distance, follow response, glow, auto-hide, and target marker appearance. The marker and center dot preserve the exact model coordinate even at screen edges; only the portrait and label are edge constrained.
 
 **Response Lifecycle**: Each response has a generation identifier and one completion path shared by success, failure, cancellation, timeout, sleep/wake interruption, and TTS failure. Old generations cannot end a newer interaction. A bounded whole-response watchdog and bounded streaming-playback drain prevent a lost network or Audio Queue completion callback from leaving `voiceState` active forever and permanently blocking auto-hide.
@@ -65,10 +67,12 @@ Optional proxy configuration: `MINIMAX_API_HOST`, `MINIMAX_CHAT_MODEL`, `MINIMAX
 | `CompanionPanelView.swift` | ~1160 | SwiftUI dropdown organized into aligned Companion, Response, and Recent sections. Keeps manual Talk compact beside the global shortcut, retains permissions/history controls, and links to standalone appearance, voice, and Codex usage settings. |
 | `CodexUsageClient.swift` | ~120 | Read-only client for the Codex usage endpoint. Loads the existing local OAuth sign-in, sends the account-aware request, and never persists or changes credentials. |
 | `CodexUsageSnapshot.swift` | ~90 | Decodes Codex quota windows by duration, including the current weekly limit and dormant five-hour compatibility. |
-| `CodexUsageMonitor.swift` | ~160 | Main-actor refresh lifecycle, wake handling, safe last-successful snapshot cache, stale detection, and user-facing failure state. |
+| `CodexUsageMonitor.swift` | ~250 | Main-actor adaptive/fixed refresh lifecycle, wake and interaction rescheduling, safe last-successful snapshot cache, stale detection, and user-facing failure state. |
 | `CodexUsageFormatting.swift` | ~65 | Compact menu-bar percentages, reset countdowns, and refresh-age text. |
-| `CodexUsageSettings.swift` | ~70 | Persisted menu bar visibility, per-window visibility, and exhausted-limit countdown preferences. |
-| `CodexUsageSettingsView.swift` | ~280 | Standalone Codex usage overview and settings UI; hides five-hour controls unless Codex returns that window. |
+| `CodexUsageRefreshPolicy.swift` | ~90 | Pure scheduling module for Adaptive backoff and fixed 2/5/15/30-minute refresh choices. |
+| `CodexUsageGlyph.swift` | ~25 | Reusable code-native blue usage-bar glyph shared by the Codex settings header and dropdown footer. |
+| `CodexUsageSettings.swift` | ~80 | Persisted menu bar visibility, per-window visibility, exhausted-limit countdown, and refresh-frequency preferences. |
+| `CodexUsageSettingsView.swift` | ~325 | Standalone Codex usage overview, refresh-frequency picker, and display settings UI; hides five-hour controls unless Codex returns that window. |
 | `CodexUsageSettingsWindowManager.swift` | ~50 | Owns the standalone resizable NSPanel that hosts `CodexUsageSettingsView`. |
 | `AppearanceSettingsView.swift` | ~390 | Standalone live appearance preview with persisted size, cursor distance, follow response, idle auto-hide, target marker, label color, glow color, and glow intensity controls. |
 | `AppearanceSettingsWindowManager.swift` | ~53 | Owns the standalone resizable NSPanel that hosts `AppearanceSettingsView`. |
@@ -132,7 +136,7 @@ cp .dev.vars.example .dev.vars
 npm run local
 ```
 
-The `leanring-buddyTests` target contains regression coverage for coordinates, permission routing, pointing policy, streaming speech segmentation, TTS cancellation, Codex quota-window decoding, refresh failure behavior, and exhausted-limit formatting. Run it through the Xcode UI. The repository intentionally has no UI-test target. Worker transport tests remain under `worker/test` and run with `npm test`.
+The `leanring-buddyTests` target contains regression coverage for coordinates, permission routing, pointing policy, streaming speech segmentation, TTS cancellation, Codex quota-window decoding, Adaptive/fixed refresh scheduling and persistence, refresh failure behavior, and exhausted-limit formatting. Run it through the Xcode UI. The repository intentionally has no UI-test target. Worker transport tests remain under `worker/test` and run with `npm test`.
 
 ## Code Style & Conventions
 

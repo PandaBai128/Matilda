@@ -24,6 +24,12 @@ final class CodexUsageSettings: ObservableObject {
         }
     }
 
+    @Published var refreshFrequency: CodexUsageRefreshFrequency {
+        didSet {
+            userDefaults.set(refreshFrequency.rawValue, forKey: Keys.refreshFrequency)
+        }
+    }
+
     private let userDefaults: UserDefaults
 
     init(userDefaults: UserDefaults = .standard) {
@@ -48,6 +54,9 @@ final class CodexUsageSettings: ObservableObject {
             defaultValue: true,
             userDefaults: userDefaults
         )
+        self.refreshFrequency = CodexUsageRefreshFrequency(
+            rawValue: userDefaults.string(forKey: Keys.refreshFrequency) ?? ""
+        ) ?? .adaptive
     }
 
     private static func boolValue(
@@ -64,5 +73,6 @@ final class CodexUsageSettings: ObservableObject {
         static let isWeeklyLimitVisible = "codexUsageWeeklyLimitVisible"
         static let isFiveHourLimitVisible = "codexUsageFiveHourLimitVisible"
         static let showsResetCountdownWhenExhausted = "codexUsageResetCountdownWhenExhausted"
+        static let refreshFrequency = "codexUsageRefreshFrequency"
     }
 }

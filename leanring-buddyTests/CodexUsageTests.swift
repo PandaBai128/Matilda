@@ -4,6 +4,116 @@ import Testing
 
 @MainActor
 struct CodexUsageTests {
+    @Test func adaptiveRefreshSlowsDownAsUserInteractionGetsOlder() {
+        let currentDate = Date(timeIntervalSince1970: 1_785_000_000)
+
+        #expect(CodexUsageRefreshPolicy.delay(
+            for: .adaptive,
+            currentDate: currentDate,
+            lastUserInteractionDate: currentDate.addingTimeInterval(-4 * 60),
+            isSystemConstrained: false
+        ) == 2 * 60)
+        #expect(CodexUsageRefreshPolicy.delay(
+            for: .adaptive,
+            currentDate: currentDate,
+            lastUserInteractionDate: currentDate.addingTimeInterval(-30 * 60),
+            isSystemConstrained: false
+        ) == 5 * 60)
+        #expect(CodexUsageRefreshPolicy.delay(
+            for: .adaptive,
+            currentDate: currentDate,
+            lastUserInteractionDate: currentDate.addingTimeInterval(-2 * 60 * 60),
+            isSystemConstrained: false
+        ) == 15 * 60)
+        #expect(CodexUsageRefreshPolicy.delay(
+            for: .adaptive,
+            currentDate: currentDate,
+            lastUserInteractionDate: nil,
+            isSystemConstrained: false
+        ) == 30 * 60)
+    }
+
+    @Test func fixedRefreshFrequencyIgnoresInteractionAgeAndSystemConstraints() {
+        let currentDate = Date(timeIntervalSince1970: 1_785_000_000)
+
+        #expect(CodexUsageRefreshPolicy.delay(
+            for: .everyFiveMinutes,
+            currentDate: currentDate,
+            lastUserInteractionDate: nil,
+            isSystemConstrained: true
+        ) == 5 * 60)
+        #expect(CodexUsageRefreshPolicy.delay(
+            for: .everyThirtyMinutes,
+            currentDate: currentDate,
+            lastUserInteractionDate: currentDate,
+            isSystemConstrained: false
+        ) == 30 * 60)
+    }
+
+    @Test func refreshFrequencyDefaultsToAdaptiveAndPersistsFixedChoices() {
+        let userDefaultsSuiteName = "CodexUsageTests.refreshFrequency"
+        let userDefaults = UserDefaults(suiteName: userDefaultsSuiteName)!
+        userDefaults.removePersistentDomain(forName: userDefaultsSuiteName)
+
+        let initialSettings = CodexUsageSettings(userDefaults: userDefaults)
+        #expect(initialSettings.refreshFrequency == .adaptive)
+
+        initialSettings.refreshFrequency = .everyFifteenMinutes
+        let reloadedSettings = CodexUsageSettings(userDefaults: userDefaults)
+        #expect(reloadedSettings.refreshFrequency == .everyFifteenMinutes)
+
+        userDefaults.removePersistentDomain(forName: userDefaultsSuiteName)
+    }
+
+    @Test func monitorUsesLatestInteractionAndSelectedRefreshFrequency() {
+        let currentDate = Date(timeIntervalSince1970: 1_785_000_000)
+        let userDefaultsSuiteName = "CodexUsageTests.monitorRefreshPolicy"
+        let userDefaults = UserDefaults(suiteName: userDefaultsSuiteName)!
+        userDefaults.removePersistentDomain(forName: userDefaultsSuiteName)
+        let usageSettings = CodexUsageSettings(userDefaults: userDefaults)
+        let monitor = CodexUsageMonitor(
+            fetchSnapshot: { throw CodexUsageError.networkUnavailable },
+            usageSettings: usageSettings
+        )
+
+        monitor.noteUserInteraction(at: currentDate.addingTimeInterval(-4 * 60))
+        #expect(monitor.nextRefreshDelay(
+            at: currentDate,
+            isSystemConstrained: false
+        ) == 2 * 60)
+
+        usageSettings.refreshFrequency = .everyFifteenMinutes
+        #expect(monitor.nextRefreshDelay(
+            at: currentDate,
+            isSystemConstrained: false
+        ) == 15 * 60)
+
+        userDefaults.removePersistentDomain(forName: userDefaultsSuiteName)
+    }
+
+    @Test func cancelledRefreshDoesNotReplaceTheLastSuccessfulStateWithAnError() async {
+        let expectedSnapshot = CodexUsageSnapshot(
+            fiveHourLimit: nil,
+            weeklyLimit: CodexQuotaWindow(
+                usedPercent: 4,
+                remainingPercent: 96,
+                resetsAt: Date(timeIntervalSince1970: 1_785_838_062),
+                durationSeconds: CodexUsageSnapshot.weeklyDurationSeconds
+            ),
+            refreshedAt: Date(timeIntervalSince1970: 1_785_000_000)
+        )
+        let monitor = CodexUsageMonitor(
+            fetchSnapshot: { throw CancellationError() },
+            initialSnapshot: expectedSnapshot
+        )
+
+        await monitor.refresh()
+
+        #expect(monitor.snapshot == expectedSnapshot)
+        #expect(monitor.refreshState == .loaded)
+        #expect(monitor.errorMessage == nil)
+    }
+
     @Test func weeklyOnlyResponseShowsWeeklyRemainingWithoutInventingFiveHourLimit() throws {
         let responseData = Data(
             """

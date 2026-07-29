@@ -884,8 +884,8 @@ struct CompanionPanelView: View {
                 NotificationCenter.default.post(name: .clickyShowCodexUsageSettings, object: nil)
             }) {
                 HStack(spacing: 6) {
-                    Image(systemName: "gauge.with.dots.needle.33percent")
-                        .font(.system(size: 11, weight: .medium))
+                    CodexUsageGlyph(color: DS.Colors.textTertiary)
+                        .frame(width: 16, height: 13)
                     Text("Codex Usage")
                         .font(.system(size: 12, weight: .medium))
                 }
