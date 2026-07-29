@@ -15,6 +15,19 @@ import AppKit
 import Combine
 import SwiftUI
 
+enum CodexUsageMenuBarLayout {
+    static func statusItemLength(forVisibleLimitCount visibleLimitCount: Int) -> CGFloat {
+        switch visibleLimitCount {
+        case 1:
+            return 62
+        case 2:
+            return 104
+        default:
+            return NSStatusItem.squareLength
+        }
+    }
+}
+
 extension Notification.Name {
     static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
     static let clickyShowVoiceSettings = Notification.Name("clickyShowVoiceSettings")
@@ -159,15 +172,9 @@ final class MenuBarPanelManager: NSObject {
     private func refreshStatusItemPresentation() {
         guard let statusItem, let button = statusItem.button else { return }
 
-        let visibleLimitCount = menuBarVisibleLimitCount
-        switch visibleLimitCount {
-        case 1:
-            statusItem.length = 76
-        case 2:
-            statusItem.length = 126
-        default:
-            statusItem.length = NSStatusItem.squareLength
-        }
+        statusItem.length = CodexUsageMenuBarLayout.statusItemLength(
+            forVisibleLimitCount: menuBarVisibleLimitCount
+        )
 
         button.image = nil
         statusItemHostingView?.removeFromSuperview()

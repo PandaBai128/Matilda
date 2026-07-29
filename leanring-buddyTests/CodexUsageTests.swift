@@ -1,9 +1,19 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Matilda
 
 @MainActor
 struct CodexUsageTests {
+    @Test func menuBarUsageKeepsItsContentButUsesTighterHorizontalSpacing() {
+        #expect(CodexUsageMenuBarLayout.statusItemLength(forVisibleLimitCount: 1) == 62)
+        #expect(CodexUsageMenuBarLayout.statusItemLength(forVisibleLimitCount: 2) == 104)
+        #expect(
+            CodexUsageMenuBarLayout.statusItemLength(forVisibleLimitCount: 0)
+                == NSStatusItem.squareLength
+        )
+    }
+
     @Test func adaptiveRefreshSlowsDownAsUserInteractionGetsOlder() {
         let currentDate = Date(timeIntervalSince1970: 1_785_000_000)
 

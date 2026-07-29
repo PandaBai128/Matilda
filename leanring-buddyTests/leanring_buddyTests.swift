@@ -273,6 +273,19 @@ struct leanring_buddyTests {
         #expect(CompanionResponseLength.detailed.systemPromptInstruction.contains("thorough"))
     }
 
+    @Test func matildaPersonaFeelsQuietCleverAndCloseWithoutPretendingToHaveMemories() {
+        let systemPrompt = MatildaCompanionPersona.systemPrompt(
+            responseLengthInstruction: CompanionResponseLength.normal.systemPromptInstruction
+        )
+
+        #expect(systemPrompt.contains("quiet, observant, and clever"))
+        #expect(systemPrompt.contains("subtle, innocent-sounding mischief"))
+        #expect(systemPrompt.contains("answer first and let personality stay secondary"))
+        #expect(systemPrompt.contains("never invent memories"))
+        #expect(systemPrompt.contains("do not use baby talk, bark, or role-play as a cartoon dog"))
+        #expect(systemPrompt.contains(CompanionResponseLength.normal.systemPromptInstruction))
+    }
+
     @Test func currentVideoFrameTextExtractionRequestsDetailedScreenshot() async throws {
         #expect(ScreenTextExtractionPolicy.isTextExtractionRequest(
             "把当前视频画面里的文字提取出来"

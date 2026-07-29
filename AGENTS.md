@@ -19,6 +19,7 @@ API keys live in the proxy layer: `worker/.dev.vars` for local development or Cl
 - **Text-to-Speech**: MiniMax T2A via the proxy. LLM text is segmented at sentence boundaries as it streams; MiniMax audio frames are parsed incrementally and played through a cancellable Audio Queue before each MP3 finishes downloading.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
+- **Companion Persona**: 壮壮 speaks as a quiet, observant, clever adult companion whose warmth is selective and especially close to the user. Subtle innocent mischief may appear occasionally, but answers stay primary; the persona never invents memories, uses baby talk, barks, performs cartoon-dog gestures, or pressures the user emotionally.
 - **Codex Usage**: A read-only local monitor uses the existing Codex OAuth sign-in to fetch the account usage snapshot. Adaptive refresh is the default: 2 minutes for recent interaction, then 5, 15, or 30 minutes as the app becomes idle; fixed 2/5/15/30-minute choices are persisted in settings. It caches only the last successful quota snapshot, never credentials, and keeps the last value visible when a refresh fails.
 - **Element Pointing**: The vision model embeds normalized `[POINT_V2:x,y:label:screenN]` tags using a fixed 0–1000 coordinate space. The overlay parses these, maps coordinates to the correct monitor, animates the Zhuangzhuang portrait along a bezier arc, and leaves the exact target visible under a blue pulse marker. Legacy `[POINT:...]` tags are stripped but never move the companion.
 - **Concurrency**: UI state is isolated to `@MainActor`. Streaming MP3 parsing and Audio Queue lifecycle work run on dedicated serial queues so playback and cancellation cannot block the menu bar UI. One event-driven cursor tracker is shared by all display overlays; its 60fps smoothing timer exists only while the mouse is moving and stops about 200ms after movement settles.
@@ -50,6 +51,8 @@ Optional proxy configuration: `MINIMAX_API_HOST`, `MINIMAX_CHAT_MODEL`, `MINIMAX
 
 **Response Lifecycle**: Each response has a generation identifier and one completion path shared by success, failure, cancellation, timeout, sleep/wake interruption, and TTS failure. Old generations cannot end a newer interaction. A bounded whole-response watchdog and bounded streaming-playback drain prevent a lost network or Audio Queue completion callback from leaving `voiceState` active forever and permanently blocking auto-hide.
 
+**Companion Persona Boundary**: The digital companion provides emotional continuity with the real 壮壮 without claiming literal identity or private memories. It expresses closeness through steady presence, attention, and current-session conversation context. Personality is deliberately restrained so screen guidance and accurate answers remain clear; no catchphrases or mandatory jokes are used.
+
 **Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
 
 **Shared URLSession for Streaming ASR**: A single long-lived `URLSession` is shared across streaming ASR sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session can corrupt the OS connection pool and cause "Socket is not connected" errors after a few rapid reconnections.
@@ -62,6 +65,7 @@ Optional proxy configuration: `MINIMAX_API_HOST`, `MINIMAX_CHAT_MODEL`, `MINIMAX
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~75 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates the companion and Codex usage monitors. No main window — the app lives entirely in the status bar. |
 | `CompanionManager.swift` | ~1400 | Central state machine. Owns dictation, shortcut monitoring, screen capture, vision API, streaming TTS, generation-aware response cleanup, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, persisted response-length, TTS, and companion appearance settings. Coordinates the full push-to-talk → screenshot → MiniMax → TTS → optional pointing pipeline. |
+| `MatildaCompanionPersona.swift` | ~50 | Pure system-prompt module defining 壮壮's restrained personality, relationship boundary, spoken-response rules, and pointing behavior. |
 | `PointingRequestPolicy.swift` | ~135 | Policies that request visual guidance for visible targets, including narrowly scoped close-page follow-ups, and high-resolution screenshots for on-screen text extraction while excluding non-visual topics. |
 | `MenuBarPanelManager.swift` | ~400 | Variable-width NSStatusItem + custom NSPanel lifecycle. Hosts the portrait and optional Codex usage values, manages the floating companion panel, opens standalone settings windows, and installs click-outside-to-dismiss monitoring. |
 | `CompanionPanelView.swift` | ~1160 | SwiftUI dropdown organized into aligned Companion, Response, and Recent sections. Keeps manual Talk compact beside the global shortcut, retains permissions/history controls, and links to standalone appearance, voice, and Codex usage settings. |
@@ -136,7 +140,7 @@ cp .dev.vars.example .dev.vars
 npm run local
 ```
 
-The `leanring-buddyTests` target contains regression coverage for coordinates, permission routing, pointing policy, streaming speech segmentation, TTS cancellation, Codex quota-window decoding, Adaptive/fixed refresh scheduling and persistence, in-flight refresh rescheduling, runtime quota expiration, refresh failure behavior, and exhausted-limit formatting. Run it through the Xcode UI. The repository intentionally has no UI-test target. Worker transport tests remain under `worker/test` and run with `npm test`.
+The `leanring-buddyTests` target contains regression coverage for coordinates, permission routing, pointing policy, the companion persona boundary, menu-bar usage width, streaming speech segmentation, TTS cancellation, Codex quota-window decoding, Adaptive/fixed refresh scheduling and persistence, in-flight refresh rescheduling, runtime quota expiration, refresh failure behavior, and exhausted-limit formatting. Run it through the Xcode UI. The repository intentionally has no UI-test target. Worker transport tests remain under `worker/test` and run with `npm test`.
 
 ## Code Style & Conventions
 
