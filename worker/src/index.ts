@@ -1,5 +1,6 @@
 import { miniMaxSSEAudioStream } from "./minimax-sse-audio";
 import { miniMaxTTSModelSupportsEmotion } from "./minimax-tts-capabilities";
+import { createMiniMaxChatResponse } from "../minimax-chat.mjs";
 
 /**
  * Clicky Proxy Worker
@@ -20,6 +21,8 @@ interface Env {
   MINIMAX_API_HOST?: string;
   MINIMAX_CHAT_MODEL?: string;
   MINIMAX_THINKING_TYPE?: string;
+  MINIMAX_REASONING_EFFORT?: string;
+  MINIMAX_MAX_TOKENS?: string;
   MINIMAX_TTS_VOICE_ID?: string;
   MINIMAX_TTS_MODEL?: string;
   MINIMAX_TTS_VOLUME?: string;
@@ -76,47 +79,9 @@ export default {
 
 async function handleChat(request: Request, env: Env, minimaxMessagesURL: string): Promise<Response> {
   const body = await request.json<Record<string, unknown>>();
-
-  applyMiniMaxChatDefaults(body, env);
-
-  const response = await fetch(minimaxMessagesURL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
+  return createMiniMaxChatResponse(body, env, minimaxMessagesURL, {
+    signal: request.signal,
   });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    console.error(`[/chat] MiniMax API error ${response.status}: ${errorBody}`);
-    return new Response(errorBody, {
-      status: response.status,
-      headers: { "content-type": "application/json" },
-    });
-  }
-
-  return new Response(response.body, {
-    status: response.status,
-    headers: {
-      "content-type": response.headers.get("content-type") || "text/event-stream",
-      "cache-control": "no-cache",
-    },
-  });
-}
-
-function applyMiniMaxChatDefaults(body: Record<string, unknown>, env: Env): void {
-  body.model = env.MINIMAX_CHAT_MODEL || "MiniMax-M3";
-
-  const thinkingType = (env.MINIMAX_THINKING_TYPE || "disabled").trim().toLowerCase();
-  if (thinkingType === "omit") {
-    delete body.thinking;
-  } else if (thinkingType === "disabled" || thinkingType === "adaptive") {
-    body.thinking = { type: thinkingType };
-  } else {
-    body.thinking = { type: "adaptive" };
-  }
 }
 
 async function handleTTS(request: Request, env: Env, minimaxTTSURL: string): Promise<Response> {

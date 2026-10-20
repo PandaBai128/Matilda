@@ -6,8 +6,10 @@ TENCENT_ASR_SECRET_KEY=replace-with-your-tencent-secret-key
 # Optional overrides
 # Use https://api.minimaxi.com for MiniMax China-region keys.
 MINIMAX_API_HOST=https://api.minimax.io
-MINIMAX_CHAT_MODEL=MiniMax-M3
-MINIMAX_THINKING_TYPE=disabled
+MINIMAX_CHAT_MODEL=MiniMax-M3.1-Flash
+MINIMAX_THINKING_TYPE=adaptive
+MINIMAX_REASONING_EFFORT=low
+MINIMAX_MAX_TOKENS=8192
 MINIMAX_TTS_MODEL=speech-2.8-turbo
 MINIMAX_TTS_VOICE_ID=Chinese (Mandarin)_Warm_Bestie
 MINIMAX_TTS_VOLUME=1.0

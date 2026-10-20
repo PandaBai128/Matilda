@@ -51,7 +51,7 @@
 
 本项目保留了 Clicky 的菜单栏助手和屏幕指引想法，但当前版本已经完成这些主要改造：
 
-- 用 MiniMax-M3 负责屏幕理解和问答；
+- 用 MiniMax-M3.1-Flash（默认 low 思考深度）负责屏幕理解和问答，保留 MiniMax-M3 兼容；
 - 用腾讯云实时 ASR 识别语音，并保留 Apple Speech 作为本地备用；
 - 用 MiniMax TTS 生成语音，支持边生成边播放、音色搜索和试听；
 - 支持本地 Node 代理，不注册 Cloudflare 也可以运行；
@@ -98,6 +98,27 @@ TENCENT_ASR_SECRET_KEY=你的腾讯云_SecretKey
 ```bash
 npm run local
 ```
+
+推荐聊天配置（不要把思考深度写进 `MINIMAX_THINKING_TYPE`）：
+
+```text
+MINIMAX_CHAT_MODEL=MiniMax-M3.1-Flash
+MINIMAX_THINKING_TYPE=adaptive
+MINIMAX_REASONING_EFFORT=low
+MINIMAX_MAX_TOKENS=8192
+```
+
+M3.1 Flash 始终思考，不能设为 `disabled`。思考深度支持 `low`、`medium`、`high`、`xhigh`、`max`，代理用 Anthropic 的 `output_config.effort` 发送，默认选 `low` 以控制语音延迟。思考与答案共用输出预算，代理为 M3.1 保留至少 8192 tokens；更高深度可相应调高 `MINIMAX_MAX_TOKENS`。旧配置 `MINIMAX_THINKING_TYPE=low` 仍可迁移识别；显式 effort 优先。MiniMax-M3 继续支持 `disabled/adaptive/omit`。
+
+本地服务在启动时读取配置，保存文件后需重启。若使用本机的 `com.clicky.local-proxy` 登录服务：
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.clicky.local-proxy
+```
+
+屏幕指向通过 MiniMax 自定义函数 `point_to_screen` 返回目标边框和截图编号。代理检查边界并计算中心，再转换成现有 App 的 `POINT_V2` 指示标签；文本中的旧坐标不能绕过工具校验。此工具只定位和指示，不执行鼠标点击、拖动、绘画或键盘输入。无目标、非法输入和多次互相冲突的调用均不放置指示圈。它不是 Claude 专用 `computer_*` 工具的原样移植。
+
+参数契约来自 [MiniMax Anthropic API](https://platform.minimax.io/docs/api-reference/text-anthropic-api)，工具协议参见 [MiniMax Tool Use](https://platform.minimax.io/docs/guides/text-m3-function-call)。
 
 浏览器直接访问 `http://localhost:8787/` 显示 `Method not allowed` 是正常的。这个服务只接收 App 发出的指定请求。
 
@@ -181,6 +202,13 @@ cd worker
 npm test
 npm run typecheck
 node --check local-server.mjs
+```
+
+需要真实 MiniMax API 的定位 smoke test 使用合成界面图，不读取桌面，且不纳入 `npm test`。从 `worker/` 执行：
+
+```bash
+swift -module-cache-path /private/tmp/matilda-swift-module-cache test/fixtures/make-grounding-fixture.swift /private/tmp/matilda-grounding-fixture.png
+node test/check-live-grounding.mjs /private/tmp/matilda-grounding-fixture.png
 ```
 
 Swift App 请通过 Xcode 界面构建和测试。当前单元测试覆盖坐标映射、指向策略、权限流程、流式分句、低资源动画和 TTS 取消。

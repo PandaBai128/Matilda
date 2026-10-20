@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { pathToFileURL, URL } from "node:url";
 import { MiniMaxSSEAudioDecoder } from "./minimax-sse-audio.mjs";
+import { createMiniMaxChatResponse } from "./minimax-chat.mjs";
 
 const TENCENT_ASR_HOST = "asr.cloud.tencent.com";
 
@@ -51,7 +52,8 @@ const server = createServer(async (request, response) => {
     sendText(response, 404, "Not found");
   } catch (error) {
     console.error("[local proxy] Unhandled error:", error);
-    sendJSON(response, 500, { error: String(error) });
+    if (response.headersSent) response.destroy(error);
+    else sendJSON(response, 500, { error: String(error) });
   }
 });
 
@@ -61,47 +63,35 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   });
 }
 
-async function handleChat(request, response) {
-  requireEnv(["MINIMAX_API_KEY"]);
-
-  const body = await readJSON(request);
-  applyMiniMaxChatDefaults(body, env);
-
-  const upstreamResponse = await fetch(MINIMAX_MESSAGES_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  response.writeHead(upstreamResponse.status, {
-    "content-type": upstreamResponse.headers.get("content-type") || "text/event-stream",
-    "cache-control": "no-cache",
-  });
-
-  if (!upstreamResponse.body) {
+export async function handleChat(request, response, options = {}) {
+  const environment = options.environment || env;
+  requireEnvironmentValues(environment, ["MINIMAX_API_KEY"]);
+  const abortController = new AbortController();
+  const abortUpstream = () => { if (!response.writableEnded) abortController.abort(); };
+  request.once("aborted", abortUpstream);
+  response.once("close", abortUpstream);
+  try {
+    const upstreamResponse = await createMiniMaxChatResponse(
+      await readJSON(request), environment, options.messagesURL || MINIMAX_MESSAGES_URL,
+      { signal: abortController.signal, fetchImplementation: options.fetchImplementation },
+    );
+    response.writeHead(upstreamResponse.status, {
+      "content-type": upstreamResponse.headers.get("content-type") || "text/event-stream",
+      "cache-control": "no-cache",
+    });
+    if (upstreamResponse.body) {
+      for await (const chunk of upstreamResponse.body) {
+        if (!response.write(chunk)) {
+          await waitForResponseDrain(response, abortController.signal);
+          if (abortController.signal.aborted) return;
+        }
+      }
+    }
     response.end();
-    return;
-  }
-
-  for await (const chunk of upstreamResponse.body) {
-    response.write(chunk);
-  }
-  response.end();
-}
-
-function applyMiniMaxChatDefaults(body, env) {
-  body.model = env.MINIMAX_CHAT_MODEL || "MiniMax-M3";
-
-  const thinkingType = String(env.MINIMAX_THINKING_TYPE || "disabled").trim().toLowerCase();
-  if (thinkingType === "omit") {
-    delete body.thinking;
-  } else if (thinkingType === "disabled" || thinkingType === "adaptive") {
-    body.thinking = { type: thinkingType };
-  } else {
-    body.thinking = { type: "adaptive" };
+  } finally {
+    abortController.abort();
+    request.off("aborted", abortUpstream);
+    response.off("close", abortUpstream);
   }
 }
 
@@ -320,6 +310,10 @@ export async function pipeMiniMaxStreamingAudioToNodeResponse(
 
 function waitForResponseDrain(response, abortSignal) {
   return new Promise((resolve) => {
+    if (abortSignal.aborted) {
+      resolve();
+      return;
+    }
     const finishWaiting = () => {
       response.off("drain", finishWaiting);
       abortSignal.removeEventListener("abort", finishWaiting);

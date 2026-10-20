@@ -14,14 +14,14 @@ API keys live in the proxy layer: `worker/.dev.vars` for local development or Cl
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: MiniMax-M3 via the local Node or Cloudflare Worker proxy with Anthropic-compatible SSE streaming
+- **AI Chat**: MiniMax-M3.1-Flash (low reasoning effort by default) via the local Node or Cloudflare Worker proxy with Anthropic-compatible SSE streaming; MiniMax-M3 remains compatible. M3.1 always thinks; the proxy sets `thinking.type=adaptive`, `output_config.effort`, and a configurable output budget of at least 8192 tokens so thinking cannot silently consume the app's old 1024-token allowance.
 - **Speech-to-Text**: Tencent Cloud ASR real-time streaming via signed websocket URL, with Apple Speech as the local fallback
 - **Text-to-Speech**: MiniMax T2A via the proxy. LLM text is segmented at sentence boundaries as it streams; MiniMax audio frames are parsed incrementally and played through a cancellable Audio Queue before each MP3 finishes downloading.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Companion Persona**: 壮壮 speaks as a quiet, observant, clever adult companion whose warmth is selective and especially close to the user. Subtle innocent mischief may appear occasionally, but answers stay primary; the persona never invents memories, uses baby talk, barks, performs cartoon-dog gestures, or pressures the user emotionally.
 - **Codex Usage**: A read-only local monitor uses the existing Codex OAuth sign-in to fetch the account usage snapshot. Adaptive refresh is the default: 2 minutes for recent interaction, then 5, 15, or 30 minutes as the app becomes idle; fixed 2/5/15/30-minute choices are persisted in settings. It caches only the last successful quota snapshot, never credentials, and keeps the last value visible when a refresh fails.
-- **Element Pointing**: The vision model embeds normalized `[POINT_V2:x,y:label:screenN]` tags using a fixed 0–1000 coordinate space. The overlay parses these, maps coordinates to the correct monitor, animates the Zhuangzhuang portrait along a bezier arc, and leaves the exact target visible under a blue pulse marker. Legacy `[POINT:...]` tags are stripped but never move the companion.
+- **Element Pointing**: For explicitly authorized pointing requests, the proxy supplies the read-only MiniMax function `point_to_screen`. It accepts a visible target's tight bounding box in normalized 0–1000 coordinates plus its 1-based screenshot number. The proxy validates the tool input and emits `[POINT_V2:x,y:label:screenN]` at the box center for the existing overlay. Invalid, missing, duplicate or ambiguous calls emit none; model-written tags cannot bypass validation. The app maps the validated point to the correct monitor, animates the portrait along a bezier arc, and marks the exact target. This is a custom function-call integration, not the Claude-specific `computer_*` protocol, and grants no clicking, typing, dragging or drawing capability.
 - **Concurrency**: UI state is isolated to `@MainActor`. Streaming MP3 parsing and Audio Queue lifecycle work run on dedicated serial queues so playback and cancellation cannot block the menu bar UI. One event-driven cursor tracker is shared by all display overlays; its 60fps smoothing timer exists only while the mouse is moving and stops about 200ms after movement settles.
 
 ### API Proxy (Local Node or Cloudflare Worker)
@@ -30,14 +30,16 @@ MiniMax requests go through either `worker/local-server.mjs` or the Cloudflare W
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
-| `POST /chat` | `api.minimax.io/anthropic/v1/messages` | MiniMax-M3 vision + streaming chat |
+| `POST /chat` | `api.minimax.io/anthropic/v1/messages` | MiniMax-M3.1-Flash vision, read-only pointing tool + streaming chat |
 | `POST /tts` | `api.minimax.io/v1/t2a_v2` | MiniMax TTS audio |
 | `POST /tts-stream` | `api.minimax.io/v1/t2a_v2` | MiniMax streaming TTS converted from SSE hex frames to chunked MP3 |
 | `POST /voices` | `api.minimax.io/v1/get_voice` | List system and account-specific MiniMax voices |
 | `POST /transcribe-url` | Signed `asr.cloud.tencent.com` websocket URL | Fetches a short-lived Tencent Cloud ASR websocket URL |
 
 Required proxy credentials: `MINIMAX_API_KEY`, `TENCENT_ASR_APP_ID`, `TENCENT_ASR_SECRET_ID`, `TENCENT_ASR_SECRET_KEY`
-Optional proxy configuration: `MINIMAX_API_HOST`, `MINIMAX_CHAT_MODEL`, `MINIMAX_THINKING_TYPE`, `MINIMAX_TTS_MODEL`, `MINIMAX_TTS_VOICE_ID`, `MINIMAX_TTS_VOLUME`, `TENCENT_ASR_ENGINE_MODEL_TYPE`, `TENCENT_ASR_ENABLE_HOTWORDS`
+Optional proxy configuration: `MINIMAX_API_HOST`, `MINIMAX_CHAT_MODEL`, `MINIMAX_THINKING_TYPE`, `MINIMAX_REASONING_EFFORT`, `MINIMAX_MAX_TOKENS`, `MINIMAX_TTS_MODEL`, `MINIMAX_TTS_VOICE_ID`, `MINIMAX_TTS_VOLUME`, `TENCENT_ASR_ENGINE_MODEL_TYPE`, `TENCENT_ASR_ENABLE_HOTWORDS`
+
+**MiniMax Request Contract**: Local Node and Cloudflare share `worker/minimax-chat.mjs`. M3.1 effort accepts low/medium/high/xhigh/max; local defaults use low rather than the upstream max. Legacy `MINIMAX_THINKING_TYPE=low` is migrated, and stale disabled configuration is upgraded to adaptive for M3.1. M3 keeps disabled/adaptive/omit. SSE thinking and tool JSON stay out of speech; empty, truncated or disconnected replies fail rather than silently completing. A valid tool-only response supplies spoken text. Preserve cancellation and response backpressure when editing this bridge. Local configuration is read on proxy startup, so file edits require a proxy restart; no Mac App rebuild is needed for proxy-only changes.
 
 ### Key Architecture Decisions
 
@@ -100,6 +102,8 @@ Optional proxy configuration: `MINIMAX_API_HOST`, `MINIMAX_CHAT_MODEL`, `MINIMAX
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~32 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
 | `worker/src/index.ts` | ~415 | Cloudflare Worker proxy. Routes include MiniMax chat, complete and streaming TTS, voice catalog, and Tencent ASR signed websocket URLs. |
+| `worker/minimax-chat.mjs` | ~200 | Shared model/effort configuration, read-only pointing tool schema, bounding-box validation, and SSE-to-App bridge. |
+| `worker/minimax-chat.d.mts` | ~20 | Type declarations for the shared chat bridge used by the Cloudflare Worker. |
 | `worker/src/minimax-sse-audio.ts` | ~86 | Incremental MiniMax SSE audio decoder and Cloudflare stream adapter with upstream cancellation propagation. |
 | `worker/src/minimax-tts-capabilities.ts` | ~3 | MiniMax TTS model capability checks used to gate unsupported request settings. |
 | `worker/local-server.mjs` | ~500 | Local Node proxy alternative with upstream cancellation, response backpressure handling, and the same API routes as the Worker. |
@@ -141,6 +145,8 @@ npm run local
 ```
 
 The `leanring-buddyTests` target contains regression coverage for coordinates, permission routing, pointing policy, the companion persona boundary, menu-bar usage width, streaming speech segmentation, TTS cancellation, Codex quota-window decoding, Adaptive/fixed refresh scheduling and persistence, in-flight refresh rescheduling, runtime quota expiration, refresh failure behavior, and exhausted-limit formatting. Run it through the Xcode UI. The repository intentionally has no UI-test target. Worker transport tests remain under `worker/test` and run with `npm test`.
+
+`worker/test/minimax-chat.test.mjs` and the local proxy tests cover M3.1 parameter migration, stream completion, cancellation, and structured screen-pointing validation. `worker/test/check-live-grounding.mjs` is an explicit live test (not part of `npm test`) using a synthetic UI generated by `worker/test/fixtures/make-grounding-fixture.swift`; it checks points against known control bounds, secondary screens, and absent targets without capturing the user's desktop. See README for invocation. Synthetic hits are evidence for this fixture, not a guarantee of arbitrary desktop accuracy.
 
 ## Code Style & Conventions
 
