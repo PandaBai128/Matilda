@@ -23,6 +23,8 @@ interface Env {
   MINIMAX_THINKING_TYPE?: string;
   MINIMAX_REASONING_EFFORT?: string;
   MINIMAX_MAX_TOKENS?: string;
+  MINIMAX_POINTING_MODE?: string;
+  MINIMAX_POINTING_PRECISION?: string;
   MINIMAX_TTS_VOICE_ID?: string;
   MINIMAX_TTS_MODEL?: string;
   MINIMAX_TTS_VOLUME?: string;

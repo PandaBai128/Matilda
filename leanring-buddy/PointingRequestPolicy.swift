@@ -18,12 +18,18 @@ enum PointingRequestPolicy {
 
         guard !normalizedTranscript.isEmpty else { return false }
 
+        if ["不要指", "不用指", "别指", "不必指", "口头解释就好", "说出", "读出", "念出", "don't point"]
+            .contains(where: { normalizedTranscript.contains($0) }) {
+            return false
+        }
+
         let explicitPointingPhrases = [
-            "指给我看", "给我指", "帮我指", "指一下",
+            "指给我", "给我指", "帮我指", "指一下", "指一指", "指出来",
+            "再指一次", "再指一遍",
             "点一下", "点击一下",
             "点哪里", "点击哪里", "点哪个", "点击哪个",
             "应该点", "该点",
-            "point to", "show me where", "where should i click",
+            "point to", "point it out", "show me where", "where should i click",
             "which button", "which icon"
         ]
 
@@ -79,7 +85,7 @@ enum PointingRequestPolicy {
         }
 
         let visibleTargetWords = [
-            "按钮", "图标", "菜单", "文件", "文件夹", "桌面", "窗口",
+            "按钮", "图标", "菜单", "文件", "文件夹", "文档", "桌面", "窗口",
             "应用", "软件", "浏览器", "输入框", "选项", "设置",
             "狗", "猫", "宠物", "人物", "头像", "图片", "照片", "标志"
         ]
@@ -120,17 +126,26 @@ enum PointingRequestPolicy {
         let normalizedTranscript = transcript
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedTranscript.isEmpty, normalizedTranscript.count <= 30 else {
+        guard !normalizedTranscript.isEmpty else {
             return false
         }
 
         let previousTargetReferences = [
-            "它", "刚才那个", "刚刚那个", "前面那个", "上一个",
-            "that one", "the previous one"
+            "它", "刚才", "刚刚", "前面那个", "上一个",
+            "that one", "the previous one", "point it out"
         ]
         if previousTargetReferences.contains(where: { normalizedTranscript.contains($0) }) {
             return true
         }
+
+        // Bare conversational imperatives omit the object even without a
+        // pronoun: “你指给我” still refers to the target discussed just before.
+        let barePointingRequest = normalizedTranscript
+            .replacingOccurrences(of: "[，。！？,.!?\\s]", with: "", options: .regularExpression)
+        if barePointingRequest.range(
+            of: "^(?:你|请|麻烦|那|再|帮我|给我|直接)*(?:指给我(?:看)?|指(?:一下|一指|出来|一次|一遍)|给我指(?:一下)?|帮我指(?:一下)?)(?:一下|吧|啊|呀|好吗|可以吗)*$",
+            options: .regularExpression
+        ) != nil { return true }
 
         let contextDependentClosePhrases = [
             "告诉我如何关掉", "告诉我怎么关掉", "怎么关掉", "如何关掉",

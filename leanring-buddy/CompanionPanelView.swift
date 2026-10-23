@@ -100,10 +100,7 @@ struct CompanionPanelView: View {
     private var panelHeader: some View {
         HStack {
             HStack(spacing: 8) {
-                Image("ZhuangzhuangHead")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 24, height: 24)
+                CompanionAtlasFrame(name: "ZhuangzhuangHeadAtlas", columns: 3, rows: 2, index: 0, size: 24)
                     .overlay(alignment: .bottomTrailing) {
                         Circle()
                             .fill(statusDotColor)
@@ -479,6 +476,10 @@ struct CompanionPanelView: View {
             Divider().background(DS.Colors.borderSubtle)
 
             companionAppearanceRow
+
+            Divider().background(DS.Colors.borderSubtle)
+
+            screenOperationSettingsRow
         }
         .background(DS.Colors.surface1)
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -517,6 +518,26 @@ struct CompanionPanelView: View {
         }
         .padding(.horizontal, 12)
         .frame(minHeight: 42)
+    }
+
+    private var screenOperationSettingsRow: some View {
+        Button {
+            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            companionManager.showScreenOperationSettings()
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Screen Control").font(.system(size: 12, weight: .medium)).foregroundColor(DS.Colors.textSecondary)
+                    Text("实验 · 单步操作").font(.system(size: 10)).foregroundColor(DS.Colors.textTertiary)
+                }
+                Spacer()
+                Text(companionManager.isScreenOperationsEnabled ? "On" : "Off")
+                    .font(.system(size: 11, weight: .medium)).foregroundColor(companionManager.isScreenOperationsEnabled ? DS.Colors.accent : DS.Colors.textTertiary)
+                Image(systemName: "cursorarrow.click").foregroundColor(DS.Colors.textSecondary)
+                    .frame(width: 30, height: 28).background(DS.Colors.surface2).clipShape(RoundedRectangle(cornerRadius: 7))
+            }.padding(.horizontal, 12).frame(minHeight: 46).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).pointerCursor()
     }
 
     private var companionAppearanceRow: some View {
@@ -579,14 +600,10 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    // MARK: - Model Picker
+    // MARK: - Response Settings
 
     private var responseSettingsSection: some View {
         VStack(spacing: 0) {
-            modelPickerRow
-
-            Divider().background(DS.Colors.borderSubtle)
-
             responseLengthRow
 
             Divider().background(DS.Colors.borderSubtle)
@@ -599,49 +616,6 @@ struct CompanionPanelView: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
         )
-    }
-
-    private var modelPickerRow: some View {
-        HStack {
-            Text("Model")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-
-            Spacer()
-
-            HStack(spacing: 0) {
-                modelOptionButton(label: "MiniMax M3", modelID: "MiniMax-M3")
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
-        }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 42)
-    }
-
-    private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
-        return Button(action: {
-            companionManager.setSelectedModel(modelID)
-        }) {
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
     }
 
     private var responseLengthRow: some View {

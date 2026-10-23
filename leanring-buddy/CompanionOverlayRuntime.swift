@@ -8,6 +8,44 @@
 import AppKit
 import Combine
 import Foundation
+import QuartzCore
+
+@MainActor
+final class CompanionNavigationFrameDriver: NSObject {
+    private var displayLink: CADisplayLink?
+    private var frameHandler: ((TimeInterval) -> Void)?
+    private var startTime: CFTimeInterval = 0
+
+    func start(screenFrame: CGRect, frameHandler: @escaping (TimeInterval) -> Void) {
+        stop()
+        guard let screen = NSScreen.screens.first(where: { $0.frame == screenFrame }) else {
+            frameHandler(.infinity)
+            return
+        }
+
+        self.frameHandler = frameHandler
+        startTime = CACurrentMediaTime()
+        let displayLink = screen.displayLink(target: self, selector: #selector(renderFrame(_:)))
+        let frameRate = Float(CompanionAnimationCadencePolicy.navigationFlightFramesPerSecond)
+        displayLink.preferredFrameRateRange = CAFrameRateRange(
+            minimum: frameRate,
+            maximum: frameRate,
+            preferred: frameRate
+        )
+        self.displayLink = displayLink
+        displayLink.add(to: .main, forMode: .common)
+    }
+
+    func stop() {
+        displayLink?.invalidate()
+        displayLink = nil
+        frameHandler = nil
+    }
+
+    @objc private func renderFrame(_ displayLink: CADisplayLink) {
+        frameHandler?(max(0, displayLink.timestamp - startTime))
+    }
+}
 
 enum CompanionAnimationCadencePolicy {
     static let navigationFlightFramesPerSecond = 60.0
@@ -20,7 +58,7 @@ enum CompanionAnimationCadencePolicy {
         case .navigatingToTarget:
             return navigationFlightFramesPerSecond
         case .pointingAtTarget:
-            return 24
+            return nil
         case .followingCursor:
             break
         }
@@ -249,11 +287,67 @@ final class CompanionAutoHideController {
     }
 }
 
+enum CompanionCursorMotionPolicy {
+    static let maximumSettlingDurationSeconds = 1.0
+    static let restingDistancePoints: CGFloat = 0.25
+    static let restingEnergy: CGFloat = 0.01
+
+    static func movementSample(
+        from previousLocation: CGPoint,
+        to mouseLocation: CGPoint,
+        elapsedTime: TimeInterval
+    ) -> (energy: CGFloat, direction: CGPoint) {
+        let horizontalDistance = mouseLocation.x - previousLocation.x
+        let verticalDistance = mouseLocation.y - previousLocation.y
+        let distance = hypot(horizontalDistance, verticalDistance)
+        guard distance > 0.01 else { return (0, .zero) }
+        let sampleDuration = min(max(elapsedTime, 1.0 / 240.0), 0.1)
+        return (
+            min(1, distance / CGFloat(sampleDuration) / 900),
+            CGPoint(x: horizontalDistance / distance, y: verticalDistance / distance)
+        )
+    }
+
+    static func interpolationFraction(
+        followResponse: CompanionFollowResponse,
+        frameDurationSeconds: TimeInterval,
+        timeSinceMovement: TimeInterval
+    ) -> CGFloat {
+        let responseFraction = followResponse.smoothingFraction(frameDurationSeconds: frameDurationSeconds)
+        guard timeSinceMovement >= 0.2 else { return responseFraction }
+
+        // The deadline closes the last fraction of a point smoothly instead of
+        // snapping a still-lagging portrait to the cursor after a fixed delay.
+        let remainingDuration = max(0, maximumSettlingDurationSeconds - timeSinceMovement)
+        let previousRemainingDuration = remainingDuration + max(0, frameDurationSeconds)
+        guard previousRemainingDuration > 0 else { return 1 }
+        let remainingFraction = remainingDuration / previousRemainingDuration
+        return max(responseFraction, CGFloat(1 - remainingFraction * remainingFraction))
+    }
+
+    static func attentionDecayFraction(
+        frameDurationSeconds: TimeInterval,
+        timeSinceMovement: TimeInterval
+    ) -> CGFloat {
+        guard timeSinceMovement > 0.05 else { return 1 }
+        return CGFloat(exp(-max(0, frameDurationSeconds) / 0.13))
+    }
+
+    static func hasSettled(
+        renderedLocation: CGPoint,
+        targetLocation: CGPoint,
+        energy: CGFloat,
+        direction: CGPoint
+    ) -> Bool {
+        hypot(targetLocation.x - renderedLocation.x, targetLocation.y - renderedLocation.y) <= restingDistancePoints
+            && energy <= restingEnergy
+            && hypot(direction.x, direction.y) <= restingEnergy
+    }
+}
+
 @MainActor
 final class CompanionCursorTracker: ObservableObject {
-    // Cursor interpolation is short-lived and stops 200 ms after movement.
-    // The user prefers display-rate smoothness while moving; this does not
-    // restore the former permanent 60 Hz update path.
+    // One short-lived clock drives follow and attention, then goes fully idle.
     static let smoothingFramesPerSecond = 60.0
     static let movementSettlingDelaySeconds = 0.20
 
@@ -265,6 +359,10 @@ final class CompanionCursorTracker: ObservableObject {
     }
 
     @Published private(set) var renderedMouseLocation: CGPoint
+    @Published private(set) var rawMouseLocation: CGPoint
+    @Published private(set) var movementEnergy: CGFloat = 0
+    @Published private(set) var movementDirection: CGPoint = .zero
+    @Published private(set) var isCursorMoving = false
     @Published private(set) var activeScreenFrame: CGRect?
     @Published private(set) var isHiddenForInactivity = false
 
@@ -294,6 +392,7 @@ final class CompanionCursorTracker: ObservableObject {
         self.companionManager = companionManager
         self.latestMouseLocation = initialMouseLocation
         self.renderedMouseLocation = initialMouseLocation
+        self.rawMouseLocation = initialMouseLocation
         self.activeScreenFrame = CompanionOverlayGeometry.screenFrame(
             containing: initialMouseLocation,
             availableScreenFrames: screenFrames
@@ -324,6 +423,7 @@ final class CompanionCursorTracker: ObservableObject {
     func stop() {
         smoothingTimer?.invalidate()
         smoothingTimer = nil
+        resetAttention()
         if let globalMouseMonitor {
             NSEvent.removeMonitor(globalMouseMonitor)
             self.globalMouseMonitor = nil
@@ -338,6 +438,19 @@ final class CompanionCursorTracker: ObservableObject {
 
     func recordMouseMovement(at mouseLocation: CGPoint, currentDate: Date = Date()) {
         let previousScreenFrame = activeScreenFrame
+        let movementSample = CompanionCursorMotionPolicy.movementSample(
+            from: latestMouseLocation,
+            to: mouseLocation,
+            elapsedTime: currentDate.timeIntervalSince(latestMouseMovementDate)
+        )
+        guard movementSample.energy > 0 else { return }
+        rawMouseLocation = mouseLocation
+        movementEnergy = max(movementSample.energy, movementEnergy * 0.82)
+        movementDirection = CGPoint(
+            x: movementDirection.x * 0.55 + movementSample.direction.x * 0.45,
+            y: movementDirection.y * 0.55 + movementSample.direction.y * 0.45
+        )
+        isCursorMoving = true
         latestMouseLocation = mouseLocation
         latestMouseMovementDate = currentDate
         activeScreenFrame = CompanionOverlayGeometry.screenFrame(
@@ -348,8 +461,7 @@ final class CompanionCursorTracker: ObservableObject {
 
         guard let companionManager else { return }
         if companionManager.companionFollowResponse == .quick || previousScreenFrame != activeScreenFrame {
-            stopSmoothing(at: mouseLocation)
-            return
+            renderedMouseLocation = mouseLocation
         }
 
         startSmoothingIfNeeded(currentDate: currentDate)
@@ -412,7 +524,7 @@ final class CompanionCursorTracker: ObservableObject {
             .sink { [weak self] followResponse in
                 guard let self else { return }
                 if followResponse == .quick {
-                    self.stopSmoothing(at: self.latestMouseLocation)
+                    self.renderedMouseLocation = self.latestMouseLocation
                 }
             }
             .store(in: &settingsCancellables)
@@ -437,24 +549,39 @@ final class CompanionCursorTracker: ObservableObject {
             return
         }
 
-        let frameDurationSeconds = max(
-            currentDate.timeIntervalSince(previousSmoothingFrameDate),
-            1.0 / Self.smoothingFramesPerSecond
-        )
+        let frameDurationSeconds = max(0, currentDate.timeIntervalSince(previousSmoothingFrameDate))
         previousSmoothingFrameDate = currentDate
-        let smoothingFraction = companionManager.companionFollowResponse.smoothingFraction(
-            frameDurationSeconds: frameDurationSeconds
+        let timeSinceMovement = max(0, currentDate.timeIntervalSince(latestMouseMovementDate))
+        let smoothingFraction = CompanionCursorMotionPolicy.interpolationFraction(
+            followResponse: companionManager.companionFollowResponse,
+            frameDurationSeconds: frameDurationSeconds,
+            timeSinceMovement: timeSinceMovement
         )
         let nextPosition = CGPoint(
             x: renderedMouseLocation.x + (latestMouseLocation.x - renderedMouseLocation.x) * smoothingFraction,
             y: renderedMouseLocation.y + (latestMouseLocation.y - renderedMouseLocation.y) * smoothingFraction
         )
         renderedMouseLocation = nextPosition
-
-        if Self.shouldStopSmoothing(
+        let cursorHasStopped = Self.shouldStopSmoothing(
             latestMouseMovementDate: latestMouseMovementDate,
             currentDate: currentDate
-        ) {
+        )
+        isCursorMoving = !cursorHasStopped
+        let attentionDecayFraction = CompanionCursorMotionPolicy.attentionDecayFraction(
+            frameDurationSeconds: frameDurationSeconds,
+            timeSinceMovement: timeSinceMovement
+        )
+        movementEnergy *= attentionDecayFraction
+        movementDirection = CGPoint(
+            x: movementDirection.x * attentionDecayFraction,
+            y: movementDirection.y * attentionDecayFraction
+        )
+        if cursorHasStopped && (CompanionCursorMotionPolicy.hasSettled(
+            renderedLocation: renderedMouseLocation,
+            targetLocation: latestMouseLocation,
+            energy: movementEnergy,
+            direction: movementDirection
+        ) || timeSinceMovement >= CompanionCursorMotionPolicy.maximumSettlingDurationSeconds) {
             stopSmoothing(at: latestMouseLocation)
         }
     }
@@ -463,5 +590,12 @@ final class CompanionCursorTracker: ObservableObject {
         smoothingTimer?.invalidate()
         smoothingTimer = nil
         renderedMouseLocation = finalMouseLocation
+        resetAttention()
+    }
+
+    private func resetAttention() {
+        movementEnergy = 0
+        movementDirection = .zero
+        isCursorMoving = false
     }
 }

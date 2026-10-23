@@ -102,15 +102,16 @@ struct CodexUsageTests {
     }
 
     @Test func cancelledRefreshDoesNotReplaceTheLastSuccessfulStateWithAnError() async {
+        let currentDate = Date()
         let expectedSnapshot = CodexUsageSnapshot(
             fiveHourLimit: nil,
             weeklyLimit: CodexQuotaWindow(
                 usedPercent: 4,
                 remainingPercent: 96,
-                resetsAt: Date(timeIntervalSince1970: 1_785_838_062),
+                resetsAt: currentDate.addingTimeInterval(604_800),
                 durationSeconds: CodexUsageSnapshot.weeklyDurationSeconds
             ),
-            refreshedAt: Date(timeIntervalSince1970: 1_785_000_000)
+            refreshedAt: currentDate
         )
         let monitor = CodexUsageMonitor(
             fetchSnapshot: { throw CancellationError() },
@@ -125,15 +126,16 @@ struct CodexUsageTests {
     }
 
     @Test func reschedulingThePollingLoopDoesNotCancelAnInFlightRefresh() async {
+        let currentDate = Date()
         let expectedSnapshot = CodexUsageSnapshot(
             fiveHourLimit: nil,
             weeklyLimit: CodexQuotaWindow(
                 usedPercent: 4,
                 remainingPercent: 96,
-                resetsAt: Date(timeIntervalSince1970: 1_785_838_062),
+                resetsAt: currentDate.addingTimeInterval(604_800),
                 durationSeconds: CodexUsageSnapshot.weeklyDurationSeconds
             ),
-            refreshedAt: Date(timeIntervalSince1970: 1_785_000_000)
+            refreshedAt: currentDate
         )
         let controlledFetcher = ControlledCodexUsageSnapshotFetcher()
         let monitor = CodexUsageMonitor(fetchSnapshot: {
@@ -244,15 +246,16 @@ struct CodexUsageTests {
     }
 
     @Test func refreshFailureKeepsTheLastSuccessfulUsageVisible() async {
+        let currentDate = Date()
         let expectedSnapshot = CodexUsageSnapshot(
             fiveHourLimit: nil,
             weeklyLimit: CodexQuotaWindow(
                 usedPercent: 18,
                 remainingPercent: 82,
-                resetsAt: Date(timeIntervalSince1970: 1_785_838_062),
+                resetsAt: currentDate.addingTimeInterval(604_800),
                 durationSeconds: CodexUsageSnapshot.weeklyDurationSeconds
             ),
-            refreshedAt: Date(timeIntervalSince1970: 1_785_000_000)
+            refreshedAt: currentDate
         )
         var refreshAttemptCount = 0
         let monitor = CodexUsageMonitor(fetchSnapshot: {

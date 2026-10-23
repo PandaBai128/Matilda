@@ -1,3 +1,5 @@
+import { computerPointingContext, prepareComputerPointingRequest, computerPointingTag, resolveComputerPointingFollowUp } from "./minimax-computer-pointing.mjs";
+
 const reasoningEfforts = new Set(["low", "medium", "high", "xhigh", "max"]);
 const pointingRequirementMarker = "internal clicky pointing requirement:";
 const pointToolName = "point_to_screen";
@@ -53,6 +55,8 @@ export function prepareMiniMaxChatRequest(incomingBody, environment) {
   const pointingBlockIndex = Array.isArray(content) ? content.findIndex(block =>
     block.type === "text" && block.text?.includes(pointingRequirementMarker)) : -1;
   const screenshotCount = Array.isArray(content) ? content.filter(block => block.type === "image").length : 0;
+  const computerContext = computerPointingContext(body, environment);
+  if (computerContext) return prepareComputerPointingRequest(body, computerContext);
   if (pointingBlockIndex >= 0 && screenshotCount > 0) {
     const originalText = content[pointingBlockIndex].text;
     const userText = originalText.slice(0, originalText.indexOf(pointingRequirementMarker)).trim();
@@ -88,22 +92,40 @@ export function validatedPointTag(toolInput, screenshotCount) {
 }
 
 export async function createMiniMaxChatResponse(incomingBody, environment, messagesURL, options = {}) {
-  const body = prepareMiniMaxChatRequest(incomingBody, environment);
+  let computerContext = computerPointingContext(incomingBody, environment);
+  const refinePoint = computerContext && environment.MINIMAX_POINTING_PRECISION === 'verified' ? options.refineComputerPoint : null;
+  if (computerContext && environment.MINIMAX_POINTING_PRECISION === 'verified' && !refinePoint) {
+    throw new Error('Verified computer pointing requires the local vision refinement provider.');
+  }
+  let body = prepareMiniMaxChatRequest(incomingBody, environment);
+  const headers = { Authorization: `Bearer ${environment.MINIMAX_API_KEY}`, "content-type": "application/json" };
+  if (computerContext?.history.length) {
+    computerContext = await resolveComputerPointingFollowUp(body, computerContext, messagesURL, headers, {
+      ...options,
+      // The prepared computer body intentionally has no history; resolution
+      // needs original image order but must retain migrated model parameters.
+      originalBody: incomingBody,
+    });
+    if (!computerContext) return new Response(`data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: '你是想让我指刚才哪个目标？告诉我名字，我再给你指。\n[POINT_V2:none]' } })}\n\ndata: {"type":"message_stop"}\n\n`, {
+      headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+    });
+    body = prepareComputerPointingRequest(body, computerContext);
+  }
   const response = await (options.fetchImplementation || fetch)(messagesURL, {
     method: "POST",
-    headers: { Authorization: `Bearer ${environment.MINIMAX_API_KEY}`, "content-type": "application/json" },
+    headers,
     body: JSON.stringify(body), signal: options.signal,
   });
   if (!response.ok || !body.stream || !response.body) return response;
   const isPointing = body.tools?.some(tool => tool.name === pointToolName) ?? false;
   const screenshotCount = body.messages.at(-1).content.filter?.(block => block.type === "image").length || 0;
-  return new Response(adaptChatStream(response.body, isPointing, screenshotCount), {
+  return new Response(adaptChatStream(response.body, isPointing, screenshotCount, computerContext, refinePoint, options.signal), {
     status: response.status,
     headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
   });
 }
 
-function adaptChatStream(upstreamBody, isPointing, screenshotCount) {
+function adaptChatStream(upstreamBody, isPointing, screenshotCount, computerContext, refinePoint, signal) {
   const reader = upstreamBody.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -121,6 +143,7 @@ function adaptChatStream(upstreamBody, isPointing, screenshotCount) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } })}\n\n`));
       }
       function emitAvailableText(final = false) {
+        if (computerContext) return;
         const safeText = isPointing ? accumulatedText.split(/\[POINT(?:_V2)?:/)[0] : accumulatedText;
         // Keep a possible split legacy tag prefix out of TTS until the next delta.
         const availableLength = final || !isPointing ? safeText.length : Math.max(0, safeText.length - 12);
@@ -170,7 +193,12 @@ function adaptChatStream(upstreamBody, isPointing, screenshotCount) {
         if (stopReason === "max_tokens") throw new Error("MiniMax exhausted the output budget before completing its answer.");
         if (stopReason !== "end_turn" && stopReason !== "tool_use") throw new Error("MiniMax did not complete an answer.");
         emitAvailableText(true);
-        if (isPointing) {
+        if (computerContext) {
+          let tag = toolBlocks.size ? "[POINT_V2:none]" : computerPointingTag(accumulatedText, computerContext.screen);
+          if (refinePoint) tag = await refinePoint({ ...computerContext, tag, signal });
+          emitText(tag === "[POINT_V2:none]" ? "我还没能确认准确位置。" : "位置在这里。");
+          emitText(`\n${tag}`);
+        } else if (isPointing) {
           const calls = [...toolBlocks.values()];
           let input;
           if (calls.length === 1 && calls[0].name === pointToolName) {

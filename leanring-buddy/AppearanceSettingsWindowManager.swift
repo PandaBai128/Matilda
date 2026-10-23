@@ -29,24 +29,24 @@ final class AppearanceSettingsWindowManager {
 
     private func createWindow() {
         let appearanceSettingsView = AppearanceSettingsView(companionManager: companionManager)
-            .frame(minWidth: 600, minHeight: 620)
+            .frame(minWidth: 600, minHeight: 650)
 
         let hostingView = NSHostingView(rootView: appearanceSettingsView)
         let appearanceSettingsWindow = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 740),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
 
-        appearanceSettingsWindow.title = "Appearance Settings"
+        appearanceSettingsWindow.title = "壮壮的外观"
         appearanceSettingsWindow.titlebarAppearsTransparent = true
         appearanceSettingsWindow.titleVisibility = .hidden
         appearanceSettingsWindow.isFloatingPanel = true
         appearanceSettingsWindow.level = .floating
         appearanceSettingsWindow.isReleasedWhenClosed = false
         appearanceSettingsWindow.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        appearanceSettingsWindow.minSize = NSSize(width: 600, height: 620)
+        appearanceSettingsWindow.minSize = NSSize(width: 600, height: 650)
         appearanceSettingsWindow.contentView = hostingView
         window = appearanceSettingsWindow
     }

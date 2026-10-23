@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { pathToFileURL, URL } from "node:url";
 import { MiniMaxSSEAudioDecoder } from "./minimax-sse-audio.mjs";
 import { createMiniMaxChatResponse } from "./minimax-chat.mjs";
+import { refineComputerPoint } from "./minimax-pointing-precision.mjs";
 
 const TENCENT_ASR_HOST = "asr.cloud.tencent.com";
 
@@ -73,7 +74,7 @@ export async function handleChat(request, response, options = {}) {
   try {
     const upstreamResponse = await createMiniMaxChatResponse(
       await readJSON(request), environment, options.messagesURL || MINIMAX_MESSAGES_URL,
-      { signal: abortController.signal, fetchImplementation: options.fetchImplementation },
+      { signal: abortController.signal, fetchImplementation: options.fetchImplementation, refineComputerPoint },
     );
     response.writeHead(upstreamResponse.status, {
       "content-type": upstreamResponse.headers.get("content-type") || "text/event-stream",

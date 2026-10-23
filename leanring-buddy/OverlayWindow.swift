@@ -25,6 +25,11 @@ class OverlayWindow: NSWindow {
         self.backgroundColor = .clear
         self.level = .screenSaver  // Always on top, above submenus and popups
         self.ignoresMouseEvents = true  // Click-through
+        // The decorative full-screen panel must be transparent to accessibility
+        // hit-testing too, otherwise the local click verifier can see the pet
+        // window instead of the real control underneath it.
+        self.setAccessibilityElement(false)
+        self.setAccessibilityChildren([])
         self.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         self.isReleasedWhenClosed = false
         self.hasShadow = false
@@ -123,6 +128,11 @@ struct BlueCursorView: View {
     let screenFrame: CGRect
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject var cursorTracker: CompanionCursorTracker
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var attentionScreen: CGRect?
+    @State private var pointingHoldTask: Task<Void, Never>?
+    @State private var pulseTask: Task<Void, Never>?
+    @State private var inputPulse: CompanionOperationFeedback?
 
     @State private var cursorPosition: CGPoint
 
@@ -164,17 +174,14 @@ struct BlueCursorView: View {
     /// if the user moves the cursor enough to cancel the navigation.
     @State private var cursorPositionWhenNavigationStarted: CGPoint = .zero
 
-    /// Timer driving the frame-by-frame bezier arc flight animation.
-    /// Invalidated when the flight completes, is canceled, or the view disappears.
-    @State private var navigationAnimationTimer: Timer?
+    /// One display-synchronized clock drives both the flight and its portrait.
+    @State private var navigationFrameDriver: CompanionNavigationFrameDriver?
+    @State private var navigationAnimationTime = Date().timeIntervalSinceReferenceDate
 
-    /// Scale factor applied to the buddy portrait during flight. Grows to ~1.3x
-    /// at the midpoint of the arc and shrinks back to 1.0x on landing, creating
-    /// an energetic "swooping" feel.
+    /// A restrained 6% flight lift, settling back to normal at landing.
     @State private var buddyFlightScale: CGFloat = 1.0
 
-    /// Scale factor for the navigation speech bubble's pop-in entrance.
-    /// Starts at 0.5 and springs to 1.0 when the first character appears.
+    /// Stable target-label scale; label is decorative, never an action result.
     @State private var navigationBubbleScale: CGFloat = 1.0
     @State private var pointingTargetPosition: CGPoint?
 
@@ -182,11 +189,15 @@ struct BlueCursorView: View {
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
 
-    private let navigationPointerPhrase = "汪，汪汪"
-
     var body: some View {
         ZStack {
             Color.clear
+
+            if let inputPulse, let location = inputPulse.location {
+                CompanionInputPulseView(color: companionManager.companionPointingMarkerColor)
+                    .id(inputPulse.id)
+                    .position(convertScreenPointToSwiftUICoordinates(location))
+            }
 
             if buddyNavigationMode == .pointingAtTarget,
                let pointingTargetPosition {
@@ -198,9 +209,7 @@ struct BlueCursorView: View {
                 .position(pointingTargetPosition)
             }
 
-            // Navigation pointer bubble — shown when buddy arrives at a detected element.
-            // Pops in with a scale-bounce (0.5x → 1.0x spring) and a bright initial
-            // glow that settles, creating a "materializing" effect.
+            // A short target label appears only at the settled destination.
             if buddyNavigationMode == .pointingAtTarget && !navigationBubbleText.isEmpty {
                 Text(navigationBubbleText)
                     .font(.system(size: 11, weight: .medium))
@@ -227,13 +236,12 @@ struct BlueCursorView: View {
                     )
                     .scaleEffect(navigationBubbleScale)
                     .opacity(navigationBubbleOpacity)
-                    .position(
-                        x: cursorPosition.x + 8 + (navigationBubbleSize.width / 2),
-                        y: cursorPosition.y + (companionManager.companionAvatarSize.diameter / 2) + 12
-                    )
-                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                    .animation(.spring(response: 0.4, dampingFraction: 0.6), value: navigationBubbleScale)
-                    .animation(.easeOut(duration: 0.5), value: navigationBubbleOpacity)
+                    .position(CompanionAppearanceMotion.bubbleCenter(
+                        proposed: CGPoint(x: cursorPosition.x + 8 + (navigationBubbleSize.width / 2),
+                                          y: cursorPosition.y + (companionManager.companionAvatarSize.diameter / 2) + 12),
+                        size: navigationBubbleSize, container: screenFrame.size
+                    ))
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: navigationBubbleOpacity)
                     .onPreferenceChange(NavigationBubbleSizePreferenceKey.self) { newSize in
                         navigationBubbleSize = newSize
                     }
@@ -250,7 +258,15 @@ struct BlueCursorView: View {
                     travelTiltDegrees: buddyTravelTiltDegrees,
                     glowColor: companionManager.companionGlowColor,
                     glowIntensity: companionManager.companionGlowIntensity,
-                    isGlowEnabled: companionManager.isCompanionGlowEnabled
+                    isGlowEnabled: companionManager.isCompanionGlowEnabled,
+                    navigationAnimationTime: buddyNavigationMode == .navigatingToTarget
+                        ? navigationAnimationTime : nil,
+                    visualStyle: companionManager.companionVisualStyle,
+                    gaze: currentGaze,
+                    movementEnergy: cursorTracker.movementEnergy,
+                    movementDirection: cursorTracker.movementDirection,
+                    isCursorMoving: cursorTracker.isCursorMoving,
+                    operationFeedback: companionManager.screenOperationFeedback
                 )
                 .scaleEffect(buddyFlightScale)
                 .opacity(cursorOpacity)
@@ -262,7 +278,11 @@ struct BlueCursorView: View {
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
         .ignoresSafeArea()
+        .accessibilityHidden(true)
         .onAppear {
+            if CompanionAppearanceMotion.shouldHoldPosition(voiceState: companionManager.voiceState) {
+                attentionScreen = cursorTracker.activeScreenFrame
+            }
             let mouseLocation = cursorTracker.renderedMouseLocation
             let swiftUIPosition = convertScreenPointToSwiftUICoordinates(mouseLocation)
             let cursorOffset = currentCursorOffset
@@ -274,6 +294,7 @@ struct BlueCursorView: View {
             self.cursorOpacity = 1.0
         }
         .onDisappear {
+            pulseTask?.cancel()
             finishNavigationAndResumeFollowing()
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
@@ -281,6 +302,9 @@ struct BlueCursorView: View {
             // that position so it points at the element.
             guard let screenLocation = newLocation,
                   let displayFrame = companionManager.detectedElementDisplayFrame else {
+                if buddyNavigationMode != .followingCursor && !isReturningToCursor {
+                    cancelNavigationAndResumeFollowing()
+                }
                 return
             }
 
@@ -299,6 +323,50 @@ struct BlueCursorView: View {
             guard newActiveScreenFrame == screenFrame else { return }
             handleTrackedMouseLocation(cursorTracker.renderedMouseLocation)
         }
+        .onChange(of: companionManager.voiceState) { oldState, newState in
+            let wasHolding = CompanionAppearanceMotion.shouldHoldPosition(voiceState: oldState)
+            let isHolding = CompanionAppearanceMotion.shouldHoldPosition(voiceState: newState)
+            if isHolding && !wasHolding {
+                attentionScreen = cursorTracker.activeScreenFrame
+                if isReturningToCursor {
+                    navigationFrameDriver?.stop()
+                    navigationFrameDriver = nil
+                    buddyNavigationMode = .followingCursor
+                    isReturningToCursor = false
+                    buddyTravelTiltDegrees = 0
+                    buddyFlightScale = 1
+                    pointingTargetPosition = nil
+                    companionManager.clearDetectedElementLocation()
+                }
+            } else if !isHolding && wasHolding {
+                let wasHere = attentionScreen == screenFrame
+                attentionScreen = nil
+                if wasHere && buddyNavigationMode == .followingCursor && cursorTracker.activeScreenFrame == screenFrame {
+                    startFlyingBackToCursor()
+                } else if buddyNavigationMode == .followingCursor && cursorTracker.activeScreenFrame == screenFrame {
+                    handleTrackedMouseLocation(cursorTracker.renderedMouseLocation)
+                }
+            }
+        }
+        .onChange(of: companionManager.screenOperationFeedback?.id) { _, _ in
+            guard let feedback = companionManager.screenOperationFeedback else {
+                inputPulse = nil
+                return
+            }
+            if feedback.kind != .performed {
+                cancelNavigationAndResumeFollowing()
+                pulseTask?.cancel()
+                inputPulse = nil
+            } else if let location = feedback.location, screenFrame.contains(location) {
+                pulseTask?.cancel()
+                inputPulse = feedback
+                pulseTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(600))
+                    guard !Task.isCancelled else { return }
+                    inputPulse = nil
+                }
+            }
+        }
         .animation(.easeInOut(duration: 0.24), value: buddyIsVisibleOnThisScreen)
     }
 
@@ -316,7 +384,7 @@ struct BlueCursorView: View {
             if companionManager.detectedElementScreenLocation != nil {
                 return false
             }
-            return cursorTracker.activeScreenFrame == screenFrame
+            return (attentionScreen ?? cursorTracker.activeScreenFrame) == screenFrame
                 && !cursorTracker.isHiddenForInactivity
         case .navigatingToTarget, .pointingAtTarget:
             return true
@@ -339,6 +407,7 @@ struct BlueCursorView: View {
         }
 
         guard buddyNavigationMode == .followingCursor,
+              !CompanionAppearanceMotion.shouldHoldPosition(voiceState: companionManager.voiceState),
               cursorTracker.activeScreenFrame == screenFrame else { return }
 
         let swiftUIPosition = convertScreenPointToSwiftUICoordinates(mouseLocation)
@@ -355,6 +424,13 @@ struct BlueCursorView: View {
         )
     }
 
+    private var currentGaze: CGPoint {
+        if companionManager.voiceState == .listening { return .zero }
+        if pointingTargetPosition == nil && !cursorTracker.isCursorMoving && cursorTracker.movementEnergy < 0.08 { return .zero }
+        let target = pointingTargetPosition ?? convertScreenPointToSwiftUICoordinates(cursorTracker.rawMouseLocation)
+        return CompanionAppearanceMotion.gaze(from: cursorPosition, toward: target)
+    }
+
     /// Converts a macOS screen point (AppKit, bottom-left origin) to SwiftUI
     /// coordinates (top-left origin) relative to this screen's overlay window.
     private func convertScreenPointToSwiftUICoordinates(_ screenPoint: CGPoint) -> CGPoint {
@@ -368,6 +444,7 @@ struct BlueCursorView: View {
 
     /// Starts animating the buddy toward a detected UI element location.
     private func startNavigatingToElement(screenLocation: CGPoint) {
+        pointingHoldTask?.cancel()
         // Convert the AppKit screen location to SwiftUI coordinates for this screen
         let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
 
@@ -376,7 +453,7 @@ struct BlueCursorView: View {
         let markerPosition = targetInSwiftUI
         pointingTargetPosition = markerPosition
 
-        let avatarDiameter = companionManager.companionAvatarSize.diameter
+        let avatarDiameter = companionManager.companionAvatarSize.diameter * companionManager.companionVisualStyle.footprintScale
         let clampedTarget = CompanionOverlayGeometry.clampedAvatarDestination(
             beside: markerPosition,
             avatarDiameter: avatarDiameter,
@@ -400,13 +477,20 @@ struct BlueCursorView: View {
 
     /// Animates the buddy along a quadratic bezier arc from its current position
     /// to the specified destination. The portrait tilts toward its direction
-    /// of travel each frame, scales up at the midpoint
-    /// for a "swooping" feel, and the glow intensifies during flight.
+    /// of travel each frame and lifts very slightly at the midpoint.
     private func animateBezierFlightArc(
         to destination: CGPoint,
         onComplete: @escaping () -> Void
     ) {
-        navigationAnimationTimer?.invalidate()
+        navigationFrameDriver?.stop()
+
+        if reduceMotion {
+            cursorPosition = destination
+            buddyFlightScale = 1
+            buddyTravelTiltDegrees = 0
+            onComplete()
+            return
+        }
 
         let startPosition = cursorPosition
         let endPosition = destination
@@ -420,8 +504,8 @@ struct BlueCursorView: View {
         let flightDurationSeconds = CompanionAnimationCadencePolicy.navigationFlightDuration(
             forDistance: distance
         )
-        let frameInterval = 1.0 / CompanionAnimationCadencePolicy.navigationFlightFramesPerSecond
-        let flightStartTime = ProcessInfo.processInfo.systemUptime
+        let expressionStartTime = Date().timeIntervalSinceReferenceDate
+        navigationAnimationTime = expressionStartTime
 
         // Control point for the quadratic bezier arc. Offset the midpoint
         // upward (negative Y in SwiftUI) so the buddy flies in a parabolic arc.
@@ -432,18 +516,24 @@ struct BlueCursorView: View {
         let arcHeight = min(distance * 0.2, 80.0)
         let controlPoint = CGPoint(x: midPoint.x, y: midPoint.y - arcHeight)
 
-        let navigationTimer = Timer(timeInterval: frameInterval, repeats: true) { _ in
-            let elapsedTime = ProcessInfo.processInfo.systemUptime - flightStartTime
+        let frameDriver = CompanionNavigationFrameDriver()
+        navigationFrameDriver = frameDriver
+        frameDriver.start(screenFrame: screenFrame) { elapsedTime in
             let linearProgress = CompanionAnimationCadencePolicy.navigationFlightProgress(
                 elapsedTime: elapsedTime,
                 duration: flightDurationSeconds
             )
-
+            // Explicit frame samples must not acquire a second implicit easing
+            // animation when voice or visibility changes during the flight.
+            var frameTransaction = Transaction(animation: nil)
+            frameTransaction.disablesAnimations = true
             if linearProgress >= 1 {
-                self.navigationAnimationTimer?.invalidate()
-                self.navigationAnimationTimer = nil
-                self.cursorPosition = endPosition
-                self.buddyFlightScale = 1.0
+                self.navigationFrameDriver?.stop()
+                self.navigationFrameDriver = nil
+                withTransaction(frameTransaction) {
+                    self.cursorPosition = endPosition
+                    self.buddyFlightScale = 1.0
+                }
                 onComplete()
                 return
             }
@@ -460,8 +550,6 @@ struct BlueCursorView: View {
                         + 2.0 * oneMinusT * t * controlPoint.y
                         + t * t * endPosition.y
 
-            self.cursorPosition = CGPoint(x: bezierX, y: bezierY)
-
             // Tilt toward the direction of travel without rotating the face
             // upside down along steep arcs.
             // to the bezier curve. B'(t) = 2(1-t)(P1-P0) + 2t(P2-P1)
@@ -470,71 +558,35 @@ struct BlueCursorView: View {
             let tangentY = 2.0 * oneMinusT * (controlPoint.y - startPosition.y)
                          + 2.0 * t * (endPosition.y - controlPoint.y)
             let travelAngle = atan2(tangentY, tangentX) * (180.0 / .pi)
-            self.buddyTravelTiltDegrees = min(max(travelAngle * 0.12, -10), 10)
 
             // Scale pulse: sin curve peaks at midpoint of the flight.
-            // Buddy grows to ~1.3x at the apex, then shrinks back to 1.0x on landing.
+            // Only a small lift at the apex, then natural size on landing.
             let scalePulse = sin(linearProgress * .pi)
-            self.buddyFlightScale = 1.0 + scalePulse * 0.3
-        }
-        navigationAnimationTimer = navigationTimer
-        RunLoop.main.add(navigationTimer, forMode: .common)
-    }
-
-    /// Transitions to pointing mode — shows a speech bubble with a bouncy
-    /// scale-in entrance and variable-speed character streaming.
-    private func startPointingAtElement() {
-        buddyNavigationMode = .pointingAtTarget
-
-        buddyTravelTiltDegrees = -5
-
-        // Reset navigation bubble state — start small for the scale-bounce entrance
-        navigationBubbleText = ""
-        navigationBubbleOpacity = 1.0
-        navigationBubbleSize = .zero
-        navigationBubbleScale = 0.5
-
-        streamNavigationBubbleCharacter(phrase: navigationPointerPhrase, characterIndex: 0) {
-            // All characters streamed — hold for 3 seconds, then fly back
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                self.navigationBubbleOpacity = 0.0
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                    self.startFlyingBackToCursor()
-                }
+            withTransaction(frameTransaction) {
+                self.cursorPosition = CGPoint(x: bezierX, y: bezierY)
+                self.buddyTravelTiltDegrees = min(max(travelAngle * 0.12, -10), 10)
+                self.buddyFlightScale = 1.0 + scalePulse * 0.06
+                self.navigationAnimationTime = expressionStartTime + elapsedTime
             }
         }
     }
 
-    /// Streams the navigation bubble text one character at a time with variable
-    /// delays (30–60ms) for a natural "speaking" rhythm.
-    private func streamNavigationBubbleCharacter(
-        phrase: String,
-        characterIndex: Int,
-        onComplete: @escaping () -> Void
-    ) {
-        guard buddyNavigationMode == .pointingAtTarget else { return }
-        guard characterIndex < phrase.count else {
-            onComplete()
-            return
-        }
-
-        let charIndex = phrase.index(phrase.startIndex, offsetBy: characterIndex)
-        navigationBubbleText.append(phrase[charIndex])
-
-        // On the first character, trigger the scale-bounce entrance
-        if characterIndex == 0 {
-            navigationBubbleScale = 1.0
-        }
-
-        let characterDelay = Double.random(in: 0.03...0.06)
-        DispatchQueue.main.asyncAfter(deadline: .now() + characterDelay) {
-            self.streamNavigationBubbleCharacter(
-                phrase: phrase,
-                characterIndex: characterIndex + 1,
-                onComplete: onComplete
-            )
+    /// Pause beside the actual target. This optional visual bubble is never speech
+    /// or a claim that the requested business operation has succeeded.
+    private func startPointingAtElement() {
+        buddyNavigationMode = .pointingAtTarget
+        buddyTravelTiltDegrees = 0
+        navigationBubbleText = companionManager.companionPointingText(for: companionManager.detectedElementLabel)
+        navigationBubbleOpacity = navigationBubbleText.isEmpty ? 0 : 1
+        navigationBubbleScale = 1
+        pointingHoldTask?.cancel()
+        pointingHoldTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.8))
+            guard !Task.isCancelled, buddyNavigationMode == .pointingAtTarget else { return }
+            navigationBubbleOpacity = 0
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, buddyNavigationMode == .pointingAtTarget else { return }
+            startFlyingBackToCursor()
         }
     }
 
@@ -560,8 +612,9 @@ struct BlueCursorView: View {
 
     /// Cancels an in-progress navigation because the user moved the cursor.
     private func cancelNavigationAndResumeFollowing() {
-        navigationAnimationTimer?.invalidate()
-        navigationAnimationTimer = nil
+        pointingHoldTask?.cancel()
+        navigationFrameDriver?.stop()
+        navigationFrameDriver = nil
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
@@ -572,8 +625,10 @@ struct BlueCursorView: View {
 
     /// Returns the buddy to normal cursor-following mode after navigation completes.
     private func finishNavigationAndResumeFollowing() {
-        navigationAnimationTimer?.invalidate()
-        navigationAnimationTimer = nil
+        pointingHoldTask?.cancel()
+        pointingHoldTask = nil
+        navigationFrameDriver?.stop()
+        navigationFrameDriver = nil
         buddyNavigationMode = .followingCursor
         isReturningToCursor = false
         buddyTravelTiltDegrees = 0
@@ -589,224 +644,8 @@ struct BlueCursorView: View {
 
 // MARK: - Zhuangzhuang Avatar
 
-struct ZhuangzhuangAvatarView: View {
-    let diameter: CGFloat
-    let voiceState: CompanionVoiceState
-    let navigationMode: BuddyNavigationMode
-    let audioPowerLevel: CGFloat
-    let travelTiltDegrees: Double
-    let glowColor: Color
-    let glowIntensity: Double
-    let isGlowEnabled: Bool
-    var blinkCycleDurationSeconds: Double = 5.8
-    @State private var expressionStateStartTime = Date().timeIntervalSinceReferenceDate
-    @State private var isLowPowerBlinkVisible = false
-    @State private var lowPowerBlinkTask: Task<Void, Never>?
 
-    var body: some View {
-        let framesPerSecond = CompanionAnimationCadencePolicy.framesPerSecond(
-            voiceState: voiceState,
-            navigationMode: navigationMode
-        )
-        Group {
-            if let framesPerSecond {
-                TimelineView(.periodic(from: .now, by: 1.0 / framesPerSecond)) { timelineContext in
-                    animatedAvatarFrame(
-                        animationTime: timelineContext.date.timeIntervalSinceReferenceDate
-                    )
-                }
-            } else {
-                lowPowerAvatarFrame
-            }
-        }
-        .onAppear { refreshLowPowerBlinkTask() }
-        .onDisappear {
-            lowPowerBlinkTask?.cancel()
-            lowPowerBlinkTask = nil
-        }
-        .onChange(of: navigationMode) { _, _ in
-            expressionStateStartTime = Date().timeIntervalSinceReferenceDate
-            refreshLowPowerBlinkTask()
-        }
-        .onChange(of: voiceState) { _, _ in
-            expressionStateStartTime = Date().timeIntervalSinceReferenceDate
-            refreshLowPowerBlinkTask()
-        }
-        .onChange(of: blinkCycleDurationSeconds) { _, _ in
-            expressionStateStartTime = Date().timeIntervalSinceReferenceDate
-            refreshLowPowerBlinkTask()
-        }
-    }
-
-    @ViewBuilder
-    private func animatedAvatarFrame(animationTime: TimeInterval) -> some View {
-        avatarImageStack(
-            animationTime: animationTime,
-            blinkProgress: blinkProgress(at: animationTime),
-            barkProgress: barkProgress(at: animationTime)
-        )
-        .rotationEffect(.degrees(rotationDegrees(at: animationTime)))
-        .scaleEffect(scale(at: animationTime))
-        .offset(offset(at: animationTime))
-    }
-
-    private var lowPowerAvatarFrame: some View {
-        avatarImageStack(
-            animationTime: expressionStateStartTime,
-            blinkProgress: isLowPowerBlinkVisible ? 1 : 0,
-            barkProgress: 0
-        )
-    }
-
-    @ViewBuilder
-    private func avatarImageStack(
-        animationTime: TimeInterval,
-        blinkProgress: CGFloat,
-        barkProgress: CGFloat
-    ) -> some View {
-        ZStack {
-            Image("ZhuangzhuangHead")
-                .resizable()
-                .scaledToFit()
-                .frame(width: diameter, height: diameter)
-
-            if blinkProgress > 0 {
-                Image("ZhuangzhuangHeadClosedEyes")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: diameter, height: diameter)
-                    .opacity(blinkProgress)
-            }
-
-            if barkProgress > 0 {
-                Image("ZhuangzhuangHeadBark")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: diameter, height: diameter)
-                    .opacity(barkProgress)
-            }
-
-            if voiceState == .listening {
-                BlueCursorWaveformView(
-                    audioPowerLevel: audioPowerLevel,
-                    accentColor: glowColor,
-                    animationTime: animationTime
-                )
-                .offset(x: diameter * 0.72, y: diameter * 0.08)
-            }
-
-            if voiceState == .processing {
-                ZhuangzhuangThinkingDotsView(
-                    diameter: diameter,
-                    animationTime: animationTime,
-                    accentColor: glowColor
-                )
-            }
-        }
-        .frame(width: diameter, height: diameter)
-        .shadow(
-            color: glowColor.opacity(glowOpacity),
-            radius: navigationMode == .navigatingToTarget ? diameter * 0.36 : diameter * 0.22,
-            x: 0,
-            y: 0
-        )
-    }
-
-    private func refreshLowPowerBlinkTask() {
-        lowPowerBlinkTask?.cancel()
-        lowPowerBlinkTask = nil
-        isLowPowerBlinkVisible = false
-
-        guard CompanionAnimationCadencePolicy.framesPerSecond(
-            voiceState: voiceState,
-            navigationMode: navigationMode
-        ) == nil else { return }
-
-        lowPowerBlinkTask = Task { @MainActor in
-            while !Task.isCancelled {
-                try? await Task.sleep(
-                    nanoseconds: UInt64(blinkCycleDurationSeconds * 1_000_000_000)
-                )
-                guard !Task.isCancelled else { return }
-                withAnimation(.easeInOut(duration: 0.10)) {
-                    isLowPowerBlinkVisible = true
-                }
-                try? await Task.sleep(nanoseconds: 170_000_000)
-                guard !Task.isCancelled else { return }
-                withAnimation(.easeInOut(duration: 0.12)) {
-                    isLowPowerBlinkVisible = false
-                }
-            }
-        }
-    }
-
-    private func rotationDegrees(at animationTime: TimeInterval) -> Double {
-        switch navigationMode {
-        case .navigatingToTarget:
-            return travelTiltDegrees
-        case .pointingAtTarget:
-            return -5 + sin(animationTime * 3.2) * 2.2
-        case .followingCursor:
-            break
-        }
-
-        switch voiceState {
-        case .idle:
-            return sin(animationTime * 1.05) * 2.4
-        case .listening:
-            return -12 + sin(animationTime * 2.1) * 2.6
-        case .processing:
-            return 15 + sin(animationTime * 1.7) * 3.0
-        case .responding:
-            return sin(animationTime * 1.6) * 1.8
-        }
-    }
-
-    private func scale(at animationTime: TimeInterval) -> CGFloat {
-        if navigationMode == .pointingAtTarget {
-            return 1 + barkProgress(at: animationTime) * 0.035
-        }
-        if voiceState == .listening {
-            let normalizedAudioPower = min(max(audioPowerLevel * 1.7, 0), 1)
-            return 1 + normalizedAudioPower * 0.055
-        }
-        return 1 + CGFloat(sin(animationTime * 1.45)) * 0.022
-    }
-
-    private func offset(at animationTime: TimeInterval) -> CGSize {
-        let horizontalMovement = CGFloat(sin(animationTime * 0.9)) * diameter * 0.035
-        let verticalMovement = CGFloat(sin(animationTime * 1.25 + 0.8)) * diameter * 0.055
-        return CGSize(width: horizontalMovement, height: verticalMovement)
-    }
-
-    private var glowOpacity: Double {
-        guard isGlowEnabled else { return 0 }
-        let navigationMultiplier = navigationMode == .navigatingToTarget ? 1.0 : 0.72
-        return min(glowIntensity * navigationMultiplier, 1)
-    }
-
-    private func blinkProgress(at animationTime: TimeInterval) -> CGFloat {
-        guard navigationMode == .followingCursor,
-              voiceState == .idle || voiceState == .responding else {
-            return 0
-        }
-
-        return ZhuangzhuangExpressionTiming.blinkProgress(
-            elapsedTime: max(0, animationTime - expressionStateStartTime),
-            cycleDurationSeconds: blinkCycleDurationSeconds
-        )
-    }
-
-    private func barkProgress(at animationTime: TimeInterval) -> CGFloat {
-        guard navigationMode == .pointingAtTarget else { return 0 }
-
-        return ZhuangzhuangExpressionTiming.barkProgress(
-            elapsedTime: max(0, animationTime - expressionStateStartTime)
-        )
-    }
-}
-
-private struct ZhuangzhuangThinkingDotsView: View {
+struct ZhuangzhuangThinkingDotsView: View {
     let diameter: CGFloat
     let animationTime: TimeInterval
     let accentColor: Color
@@ -833,11 +672,20 @@ struct ZhuangzhuangTargetMarkerView: View {
     let diameter: CGFloat
     let markerColor: Color
     let showsCenterDot: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1.0 / 12.0)) { timelineContext in
-            let phase = CGFloat((sin(timelineContext.date.timeIntervalSinceReferenceDate * 4.0) + 1) / 2)
-            ZStack {
+        if reduceMotion {
+            marker(phase: 0.5)
+        } else {
+            TimelineView(.periodic(from: .now, by: 1.0 / 12.0)) { timelineContext in
+                marker(phase: CGFloat((sin(timelineContext.date.timeIntervalSinceReferenceDate * 4.0) + 1) / 2))
+            }
+        }
+    }
+
+    private func marker(phase: CGFloat) -> some View {
+        ZStack {
                 Circle()
                     .stroke(
                         markerColor.opacity(Double(0.82 - phase * 0.34)),
@@ -857,14 +705,13 @@ struct ZhuangzhuangTargetMarkerView: View {
             }
             .frame(width: diameter * 1.12, height: diameter * 1.12)
             .shadow(color: markerColor.opacity(0.68), radius: diameter * 0.22)
-        }
     }
 }
 
 // MARK: - Listening Waveform
 
 /// A small waveform that reacts beside Zhuangzhuang while the user speaks.
-private struct BlueCursorWaveformView: View {
+struct BlueCursorWaveformView: View {
     let audioPowerLevel: CGFloat
     let accentColor: Color
     let animationTime: TimeInterval

@@ -2,6 +2,7 @@
 // synthetic fixture and prints no credentials, reasoning, or desktop content.
 import { readFileSync } from "node:fs";
 import { createMiniMaxChatResponse } from "../minimax-chat.mjs";
+import { refineComputerPoint } from "../minimax-pointing-precision.mjs";
 
 const environment = {};
 for (const filename of [".dev.vars", ".env"]) {
@@ -16,6 +17,8 @@ Object.assign(environment, {
   MINIMAX_CHAT_MODEL: "MiniMax-M3.1-Flash", MINIMAX_THINKING_TYPE: "adaptive",
   MINIMAX_REASONING_EFFORT: "low", MINIMAX_MAX_TOKENS: "8192",
 });
+environment.MINIMAX_CHAT_MODEL = process.env.MATILDA_TEST_MODEL || environment.MINIMAX_CHAT_MODEL;
+environment.MINIMAX_POINTING_MODE = process.env.MATILDA_TEST_POINTING_MODE || environment.MINIMAX_POINTING_MODE || "custom";
 if (!environment.MINIMAX_API_KEY) throw new Error("Missing local MiniMax credentials.");
 const fixture = readFileSync(process.argv[2] || "/private/tmp/matilda-grounding-fixture.png").toString("base64");
 const personaSource = readFileSync("../leanring-buddy/MatildaCompanionPersona.swift", "utf8");
@@ -51,7 +54,7 @@ for (const testCase of selectedCases) {
     })
     : await createMiniMaxChatResponse(body, environment,
       `${(environment.MINIMAX_API_HOST || "https://api.minimax.io").replace(/\/+$/, "")}/anthropic/v1/messages`, {
-        signal: AbortSignal.timeout(90000),
+        signal: AbortSignal.timeout(90000), refineComputerPoint,
       });
   if (!response.ok) {
     // Only status and API error code, never echoed request bodies or headers.
@@ -74,5 +77,5 @@ for (const testCase of selectedCases) {
   if (!hit) failures += 1;
   console.log(JSON.stringify({ test: testCase.name, hit, point, expectedBox: box, seconds: Number(((performance.now() - started) / 1000).toFixed(2)) }));
 }
-console.log(JSON.stringify({ model: environment.MINIMAX_CHAT_MODEL, effort: "low", cases: selectedCases.length, failures }));
+console.log(JSON.stringify({ model: environment.MINIMAX_CHAT_MODEL, effort: "low", pointingMode: environment.MINIMAX_POINTING_MODE, cases: selectedCases.length, failures }));
 process.exitCode = failures ? 1 : 0;

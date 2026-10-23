@@ -354,10 +354,7 @@ private struct CodexUsageMenuBarContent: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { timelineContext in
             HStack(spacing: 7) {
-                Image("ZhuangzhuangMenuIcon")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 18, height: 18)
+                CompanionAtlasFrame(name: "ZhuangzhuangHeadAtlas", columns: 3, rows: 2, index: 0, size: 18)
 
                 if usageSettings.isMenuBarUsageVisible,
                    let snapshot = usageMonitor.snapshot {

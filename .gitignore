@@ -10,6 +10,7 @@ build/
 *.dSYM.zip
 xcuserdata/
 *.xcuserstate
+*.profraw
 
 # Node dependencies and local credentials
 worker/node_modules/

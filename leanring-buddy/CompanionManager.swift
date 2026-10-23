@@ -222,6 +222,7 @@ final class CompanionManager: ObservableObject {
     /// buddy should fly to and point at. Parsed from MiniMax's response;
     /// observed by BlueCursorView to trigger the flight animation.
     @Published var detectedElementScreenLocation: CGPoint?
+    @Published private(set) var detectedElementLabel: String?
     /// The display frame (global AppKit coords) of the screen the detected
     /// element is on, so BlueCursorView knows which screen overlay should animate.
     @Published var detectedElementDisplayFrame: CGRect?
@@ -233,10 +234,19 @@ final class CompanionManager: ObservableObject {
     /// through this so keys never ship in the app binary.
     private static let workerBaseURL = AppBundleConfiguration.workerBaseURL
     private static let maxConversationHistoryCount = 10
-    private static let pointingConversationHistoryCount = 1
     private static let maxAssistantHistoryCharacters = 2_400
     private static let standardScreenshotLongEdgeInPixels = 2048
     private static let pointingScreenshotLongEdgeInPixels = 3072
+    private let screenOperationController = ScreenOperationController()
+    private var screenOperationSettingsWindow: ScreenOperationSettingsWindowManager?
+    private var pendingScreenOperation: (request: ScreenOperationRequest, expiresAt: Date)?
+    private var screenOperationFeedbackSession = CompanionOperationFeedbackSession()
+    @Published private(set) var screenOperationFeedback: CompanionOperationFeedback?
+    @Published private(set) var isScreenOperationsEnabled = UserDefaults.standard.bool(forKey: ScreenOperationPolicy.preferenceKey)
+    @Published private(set) var isPerformingScreenOperation = false
+    @Published private(set) var lastScreenOperationMessage = UserDefaults.standard.bool(forKey: ScreenOperationPolicy.preferenceKey)
+        ? "已开启实验性单步操作。按住 Control＋Option 说话即可打断。"
+        : "屏幕操作已关闭。聊天和指示位置仍然可用。"
     static let responseInteractionTimeoutSeconds: TimeInterval = 300
     static let streamingPlaybackDrainTimeoutSeconds: TimeInterval = 180
     static let streamingPlaybackPollIntervalSeconds: TimeInterval = 0.1
@@ -306,6 +316,9 @@ final class CompanionManager: ObservableObject {
         }
         return storedSize
     }()
+    @Published private(set) var companionVisualStyle = CompanionVisualStyle.load(from: .standard)
+    @Published private(set) var companionPointingLabelMode = CompanionPointingLabelMode.load(from: .standard)
+    @Published private(set) var companionCustomPointingText = UserDefaults.standard.string(forKey: CompanionPointingLabelMode.customTextKey) ?? "汪，汪汪"
     @Published private(set) var companionCursorDistance: CompanionCursorDistance = {
         guard let storedValue = UserDefaults.standard.string(forKey: "zhuangzhuangCursorDistance"),
               let storedDistance = CompanionCursorDistance(rawValue: storedValue) else {
@@ -413,6 +426,25 @@ final class CompanionManager: ObservableObject {
     func setCompanionAvatarSize(_ companionAvatarSize: CompanionAvatarSize) {
         self.companionAvatarSize = companionAvatarSize
         UserDefaults.standard.set(companionAvatarSize.rawValue, forKey: "zhuangzhuangAvatarSize")
+    }
+
+    func setCompanionVisualStyle(_ style: CompanionVisualStyle) {
+        companionVisualStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: CompanionVisualStyle.preferenceKey)
+    }
+
+    func setCompanionPointingLabelMode(_ mode: CompanionPointingLabelMode) {
+        companionPointingLabelMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: CompanionPointingLabelMode.preferenceKey)
+    }
+
+    func setCompanionCustomPointingText(_ text: String) {
+        companionCustomPointingText = String(text.components(separatedBy: .newlines).joined(separator: " ").prefix(32))
+        UserDefaults.standard.set(companionCustomPointingText, forKey: CompanionPointingLabelMode.customTextKey)
+    }
+
+    func companionPointingText(for target: String?) -> String {
+        companionPointingLabelMode.text(target: target, custom: companionCustomPointingText)
     }
 
     func setCompanionCursorDistance(_ companionCursorDistance: CompanionCursorDistance) {
@@ -624,6 +656,7 @@ final class CompanionManager: ObservableObject {
     func clearDetectedElementLocation() {
         detectedElementScreenLocation = nil
         detectedElementDisplayFrame = nil
+        detectedElementLabel = nil
     }
 
     func stop() {
@@ -898,7 +931,8 @@ final class CompanionManager: ObservableObject {
 
     private var companionVoiceResponseSystemPrompt: String {
         MatildaCompanionPersona.systemPrompt(
-            responseLengthInstruction: responseLength.systemPromptInstruction
+            responseLengthInstruction: responseLength.systemPromptInstruction,
+            screenOperationsEnabled: isScreenOperationsEnabled
         )
     }
 
@@ -933,6 +967,8 @@ final class CompanionManager: ObservableObject {
     // MARK: - AI Response Pipeline
 
     func beginResponseInteraction(responseTaskIdentifier: UUID) {
+        screenOperationFeedbackSession.reset()
+        screenOperationFeedback = nil
         activeResponseInteractionIdentifier = responseTaskIdentifier
         voiceState = .processing
     }
@@ -947,6 +983,11 @@ final class CompanionManager: ObservableObject {
         reason: CompanionResponseCompletionReason
     ) {
         guard activeResponseInteractionIdentifier == responseTaskIdentifier else { return }
+        if isPerformingScreenOperation, reason == .interactionTimedOut {
+            publishScreenOperationFeedback(.uncertain, responseTaskIdentifier: responseTaskIdentifier)
+            isPerformingScreenOperation = false
+        }
+        screenOperationFeedbackSession.finish(operationIdentifier: responseTaskIdentifier)
         activeResponseInteractionIdentifier = nil
         if reason.requiresPlaybackCleanup {
             stopAllSpeechAndCancelPreview()
@@ -960,6 +1001,18 @@ final class CompanionManager: ObservableObject {
         reason: CompanionResponseCompletionReason = .cancelled
     ) {
         currentResponseTask?.cancel()
+        if isPerformingScreenOperation {
+            if let activeResponseInteractionIdentifier {
+                publishScreenOperationFeedback(
+                    .cancelled,
+                    responseTaskIdentifier: activeResponseInteractionIdentifier,
+                    location: detectedElementScreenLocation
+                )
+            }
+            isPerformingScreenOperation = false
+            detectedElementScreenLocation = nil
+            detectedElementDisplayFrame = nil
+        }
         if let activeResponseInteractionIdentifier {
             completeResponseInteraction(
                 responseTaskIdentifier: activeResponseInteractionIdentifier,
@@ -1053,7 +1106,20 @@ final class CompanionManager: ObservableObject {
     /// MiniMax may return a point tag only when the user's words explicitly
     /// request on-screen location help.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+        let pending = pendingScreenOperation
+        pendingScreenOperation = nil
         cancelCurrentResponseInteraction()
+
+        if let pending, pending.expiresAt > Date(), let confirmed = ScreenOperationPolicy.confirmationDecision(for: transcript) {
+            sendScreenOperation(confirmed ? pending.request : .init(kind: .cancel, target: ""), transcript: transcript)
+            return
+        }
+
+        let operationRequest = ScreenOperationPolicy.request(for: transcript)
+        if let operationRequest {
+            sendScreenOperation(operationRequest, transcript: transcript)
+            return
+        }
 
         let shouldRequestPointing = PointingRequestPolicy.shouldRequestPointing(
             for: transcript,
@@ -1094,13 +1160,14 @@ final class CompanionManager: ObservableObject {
 
                 // A newly named visual target is self-contained. Carrying the old
                 // target into that request can make the model answer the previous
-                // question again. Only context-dependent follow-ups retain one exchange.
+                // question again. Follow-ups retain the available session history
+                // so intermediate clarifications do not erase the original target.
                 let requiresPreviousVisualContext = shouldRequestPointing
                     && PointingRequestPolicy.requiresPreviousVisualContext(for: transcript)
                 let conversationHistoryForRequest: [CompanionConversationExchange]
                 if shouldRequestPointing {
                     conversationHistoryForRequest = requiresPreviousVisualContext
-                        ? Array(conversationHistory.suffix(Self.pointingConversationHistoryCount))
+                        ? conversationHistory
                         : []
                 } else {
                     conversationHistoryForRequest = conversationHistory
@@ -1186,6 +1253,7 @@ final class CompanionManager: ObservableObject {
                     )
 
                     detectedElementDisplayFrame = displayFrame
+                    detectedElementLabel = parseResult.elementLabel
                     detectedElementScreenLocation = globalLocation
                     matildaDebugLog("pointing target accepted")
                 } else {
@@ -1231,6 +1299,156 @@ final class CompanionManager: ObservableObject {
                 } else {
                     completionReason = .cancelled
                 }
+            }
+        }
+    }
+
+    func setScreenOperationsEnabled(_ enabled: Bool) {
+        isScreenOperationsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: ScreenOperationPolicy.preferenceKey)
+        if !enabled { pendingScreenOperation = nil }
+        if !enabled && isPerformingScreenOperation { cancelCurrentResponseInteraction() }
+        lastScreenOperationMessage = enabled ? "已开启实验性单步操作。按住 Control＋Option 说话即可打断。" : "屏幕操作已关闭。聊天和指示位置仍然可用。"
+    }
+
+    func showScreenOperationSettings() {
+        if screenOperationSettingsWindow == nil { screenOperationSettingsWindow = ScreenOperationSettingsWindowManager(companionManager: self) }
+        screenOperationSettingsWindow?.showWindow()
+    }
+
+    func stopScreenOperation() {
+        pendingScreenOperation = nil
+        if isPerformingScreenOperation {
+            cancelCurrentResponseInteraction()
+        } else {
+            screenOperationFeedback = CompanionOperationFeedback(kind: .cancelled)
+        }
+        lastScreenOperationMessage = "已停止，不会继续执行后续操作。"
+    }
+
+    private func publishScreenOperationFeedback(
+        _ kind: CompanionOperationFeedback.Kind,
+        responseTaskIdentifier: UUID,
+        location: CGPoint? = nil
+    ) {
+        guard isCurrentResponseInteraction(responseTaskIdentifier),
+              let feedback = screenOperationFeedbackSession.record(
+                kind,
+                operationIdentifier: responseTaskIdentifier,
+                location: location
+              ) else { return }
+        screenOperationFeedback = feedback
+    }
+
+    private func sendScreenOperation(_ request: ScreenOperationRequest, transcript: String) {
+        let identifier = UUID()
+        beginResponseInteraction(responseTaskIdentifier: identifier)
+        screenOperationFeedbackSession.begin(operationIdentifier: identifier)
+        isPerformingScreenOperation = true
+        currentResponseTask = Task {
+            let watchdog = scheduleResponseInteractionWatchdog(responseTaskIdentifier: identifier)
+            defer {
+                watchdog.cancel()
+                if isCurrentResponseInteraction(identifier) {
+                    isPerformingScreenOperation = false
+                    completeResponseInteraction(responseTaskIdentifier: identifier, reason: Task.isCancelled ? .cancelled : .succeeded)
+                }
+            }
+            let message: String
+            var feedbackKind: CompanionOperationFeedback.Kind?
+            var feedbackLocation: CGPoint?
+            do {
+                if request.kind == .cancel {
+                    message = "已停止操作。"
+                    feedbackKind = .cancelled
+                } else if !isScreenOperationsEnabled {
+                    message = ScreenOperationPolicy.disabledMessage
+                } else if ScreenOperationPolicy.containsMultipleOperations(transcript) {
+                    message = "第一版一次只做一步。你先告诉我现在要点哪个。"
+                    feedbackKind = .uncertain
+                } else if request.kind == .closeWindow {
+                    message = try screenOperationController.closeFrontWindow()
+                    feedbackKind = .performed
+                } else if request.kind == .openApplication, screenOperationController.applicationURL(named: request.target) != nil {
+                    message = try await screenOperationController.openApplication(named: request.target)
+                    feedbackKind = .performed
+                } else {
+                    let reference = try screenOperationController.reference()
+                    if !request.requiresVisualTarget {
+                        let point = try screenOperationController.scrollPoint(reference: reference)
+                        guard isScreenOperationsEnabled else { throw CancellationError() }
+                        message = try await screenOperationController.perform(request, at: point, reference: reference)
+                        feedbackLocation = point
+                        feedbackKind = .performed
+                    } else {
+                        let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(longEdgeInPixels: Self.pointingScreenshotLongEdgeInPixels)
+                        let history = request.requiresConversationContext ? conversationHistory : []
+                        let (text, _) = try await claudeAPI.analyzeImageStreaming(
+                            images: captures.map { (data: $0.imageData, label: $0.label) },
+                            systemPrompt: companionVoiceResponseSystemPrompt,
+                            conversationHistory: history.map { (userPlaceholder: $0.userTranscript, assistantResponse: Self.textForConversationContext(from: $0.assistantResponse)) },
+                            userPrompt: Self.userPromptWithPointingContract(request.localizationPrompt, shouldRequestPointing: true),
+                            temperature: 0.1, onTextChunk: { _ in }
+                        )
+                        try Task.checkCancellation()
+                        try screenOperationController.assertExecutionAllowed()
+                        let result = Self.parsePointingCoordinates(from: text)
+                        guard let coordinate = result.coordinate, let screenNumber = result.screenNumber,
+                              screenNumber >= 1, screenNumber <= captures.count else {
+                            throw ScreenOperationError.unsafe("你要点哪个目标？请说一下名称或位置。")
+                        }
+                        let capture = captures[screenNumber - 1]
+                        let location = Self.globalScreenLocation(fromNormalizedCoordinate: coordinate, displayFrame: capture.displayFrame)
+                        guard capture.displayFrame.contains(location) else { throw ScreenOperationError.unsafe("目标不在有效屏幕范围内，没有点击。") }
+                        if !isOverlayVisible {
+                            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                            isOverlayVisible = true
+                        }
+                        detectedElementDisplayFrame = capture.displayFrame
+                        detectedElementLabel = result.elementLabel
+                        detectedElementScreenLocation = location
+                        guard isScreenOperationsEnabled, isCurrentResponseInteraction(identifier) else { throw CancellationError() }
+                        try screenOperationController.assertExecutionAllowed()
+                        let freshCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(longEdgeInPixels: Self.pointingScreenshotLongEdgeInPixels)
+                        guard let fresh = freshCaptures.first(where: { $0.displayFrame == capture.displayFrame }) else {
+                            throw ScreenOperationError.unsafe("屏幕布局刚变了，你现在要点哪里？")
+                        }
+                        let difference = await Task.detached(priority: .userInitiated) {
+                            ScreenOperationController.targetPatchDifference(original: capture.imageData, current: fresh.imageData, normalizedPoint: coordinate)
+                        }.value
+                        try Task.checkCancellation()
+                        guard isCurrentResponseInteraction(identifier) else { throw CancellationError() }
+                        guard let difference, difference < 12, !screenOperationController.sceneHasChanged(since: reference) else {
+                            pendingScreenOperation = (request, Date().addingTimeInterval(60))
+                            throw ScreenOperationError.unsafe("画面刚发生变化，你现在要点的还是\(request.target)吗？")
+                        }
+                        try Task.checkCancellation()
+                        guard isScreenOperationsEnabled else { throw CancellationError() }
+                        message = try await screenOperationController.perform(request, at: location, reference: reference)
+                        feedbackLocation = location
+                        feedbackKind = .performed
+                    }
+                }
+            } catch is CancellationError {
+                publishScreenOperationFeedback(.cancelled, responseTaskIdentifier: identifier)
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                message = (error as? ScreenOperationError)?.errorDescription ?? "这次没有确认操作完成，已停止，不会自动重试。"
+                feedbackKind = .uncertain
+            }
+            guard !Task.isCancelled, isCurrentResponseInteraction(identifier) else { return }
+            if let feedbackKind {
+                publishScreenOperationFeedback(feedbackKind, responseTaskIdentifier: identifier, location: feedbackLocation)
+            }
+            lastScreenOperationMessage = message
+            appendConversationHistory(userTranscript: transcript, assistantResponse: message)
+            markResponsePlaybackStarted(responseTaskIdentifier: identifier)
+            do {
+                try await elevenLabsTTSClient.speakText(message, voiceID: selectedTTSVoiceID, volume: ttsVolume, speed: ttsSpeed, pitch: ttsPitch, emotion: ttsEmotion)
+                _ = await CompanionPlaybackDrainMonitor.waitUntilFinished(maximumWaitSeconds: 30, pollIntervalSeconds: Self.streamingPlaybackPollIntervalSeconds, isPlaying: { [weak self] in self?.elevenLabsTTSClient.isPlaying ?? false })
+            } catch {
+                if !Task.isCancelled { await systemSpeechFallbackController.speak(message) }
             }
         }
     }

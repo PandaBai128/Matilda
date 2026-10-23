@@ -21,6 +21,15 @@ struct leanring_buddyApp: App {
         Settings {
             EmptyView()
         }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Appearance…") {
+                    NotificationCenter.default.post(name: .clickyShowAppearanceSettings, object: nil)
+                }
+                Button("Screen Control…") { appDelegate.showScreenOperationSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
 }
 
@@ -52,6 +61,14 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if !companionManager.allPermissionsGranted {
             menuBarPanelManager?.showPanelOnLaunch()
         }
+        #if DEBUG
+        // An opt-in, one-shot test entry avoids requiring a human to expand a
+        // menu-only app before CUA can bind a window. It grants no actions.
+        if UserDefaults.standard.bool(forKey: "matildaOpenScreenControlForTesting") {
+            UserDefaults.standard.removeObject(forKey: "matildaOpenScreenControlForTesting")
+            companionManager.showScreenOperationSettings()
+        }
+        #endif
         registerAsLoginItemIfNeeded()
     }
 
@@ -59,6 +76,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         codexUsageMonitor.stop()
         companionManager.stop()
     }
+
+    func showScreenOperationSettings() { companionManager.showScreenOperationSettings() }
 
     /// Registers the app as a login item so it launches automatically on
     /// startup. Uses SMAppService which shows the app in System Settings >

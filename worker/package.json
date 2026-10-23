@@ -2,6 +2,7 @@
   "name": "clicky-proxy",
   "private": true,
   "type": "module",
+  "dependencies": { "sharp": "0.33.5" },
   "scripts": {
     "local": "node local-server.mjs",
     "dev": "wrangler dev",

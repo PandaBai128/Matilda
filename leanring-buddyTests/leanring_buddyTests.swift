@@ -206,7 +206,17 @@ struct leanring_buddyTests {
         ))
     }
 
-    @Test func contextDependentVisualFollowUpKeepsOnePreviousExchange() async throws {
+    @Test func naturalPointingFollowUpsRequestPointingAndKeepRecentContext() {
+        for transcript in ["你指给我", "指给我", "给我指一下", "再指一次", "指一指", "你直接指给我看一下好吗，我还是没看到刚才说的那个位置"] {
+            #expect(PointingRequestPolicy.shouldRequestPointing(for: transcript))
+            #expect(PointingRequestPolicy.requiresPreviousVisualContext(for: transcript))
+        }
+        #expect(!PointingRequestPolicy.shouldRequestPointing(for: "说出‘指’这个字"))
+        #expect(!PointingRequestPolicy.shouldRequestPointing(for: "不要指给我，口头解释就好"))
+        #expect(!PointingRequestPolicy.requiresPreviousVisualContext(for: "指一下 Export CSV 按钮，不是 Export PDF"))
+    }
+
+    @Test func contextDependentVisualFollowUpKeepsRecentExchanges() async throws {
         #expect(PointingRequestPolicy.requiresPreviousVisualContext(
             for: "怎么关掉它？"
         ))
@@ -793,7 +803,7 @@ struct leanring_buddyTests {
         #expect(CompanionAnimationCadencePolicy.framesPerSecond(
             voiceState: .idle,
             navigationMode: .pointingAtTarget
-        ) == 24)
+        ) == nil)
         #expect(CompanionAnimationCadencePolicy.framesPerSecond(
             voiceState: .idle,
             navigationMode: .navigatingToTarget
