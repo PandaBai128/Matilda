@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="386" viewBox="0 0 1200 386" role="img" aria-labelledby="title desc">
+  <title id="title">壮壮：跟随、解答、指向、点击</title>
+  <desc id="desc">四项功能示意：跟随鼠标安静陪伴，看当前屏幕回答问题，标记目标位置，按明确指令执行一步操作。</desc>
+  <rect width="1200" height="386" rx="20" fill="#101713"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <text x="32" y="42" fill="#b4c3bb" font-size="17">陪在你身边，也帮你处理眼前的事。</text>
+    <text x="1168" y="42" text-anchor="end" fill="#91a49a" font-size="14">功能示意</text>
+    <g fill="#1c2922" stroke="#34473b" stroke-width="1">
+      <rect x="24" y="68" width="276" height="246" rx="12"/>
+      <rect x="316" y="68" width="276" height="246" rx="12"/>
+      <rect x="608" y="68" width="276" height="246" rx="12"/>
+      <rect x="900" y="68" width="276" height="246" rx="12"/>
+    </g>
+    <g stroke="#ffd479" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M58 162 C90 162 85 113 122 123" stroke-dasharray="3 8"/>
+      <path d="M143 109 L143 158 L156 146 L166 167 L176 162 L166 142 L184 141 Z" fill="#ffd479" stroke="none"/>
+      <circle cx="223" cy="150" r="19"/>
+      <path d="M211 146 L214 146 M231 146 L234 146 M218 157 Q223 161 228 157"/>
+      <rect x="353" y="102" width="137" height="81" rx="7"/>
+      <path d="M365 125 H438 M365 140 H417 M365 155 H400" stroke="#799687"/>
+      <path d="M473 135 H546 Q554 135 554 143 V177 Q554 185 546 185 H512 L498 198 V185 H473 Q465 185 465 177 V143 Q465 135 473 135 Z" fill="#1c2922"/>
+      <path d="M482 159 V164 M493 151 V172 M504 145 V178 M515 152 V171 M526 157 V166 M537 160 V163"/>
+      <rect x="644" y="120" width="197" height="52" rx="8" stroke="#799687"/>
+      <circle cx="742" cy="146" r="36"/>
+      <circle cx="742" cy="146" r="5" fill="#ffd479" stroke="none"/>
+      <path d="M742 101 V111 M742 181 V191 M697 146 H707 M777 146 H787"/>
+      <rect x="943" y="110" width="122" height="65" rx="9"/>
+      <path d="M1010 143 L1010 191 L1023 180 L1033 200 L1042 196 L1032 175 L1050 175 Z" fill="#ffd479" stroke="none"/>
+      <path d="M1078 116 L1092 130 L1116 100"/>
+    </g>
+    <g fill="#f2f5f1" font-size="30" font-weight="600">
+      <text x="48" y="239">跟随鼠标</text><text x="340" y="239">看屏解答</text>
+      <text x="632" y="239">指给你看</text><text x="924" y="239">帮你点一下</text>
+    </g>
+    <g fill="#bccbc1" font-size="18">
+      <text x="48" y="275">转头、眨眼，安静陪着你</text>
+      <text x="340" y="275">看当前画面，用语音回应</text>
+      <text x="632" y="275">飞到目标旁，标出位置</text>
+      <text x="924" y="275">明确指令，一次一步</text>
+    </g>
+    <text x="600" y="354" text-anchor="middle" fill="#dce6df" font-size="19">按住 Control + Option 说话 · 松开后回应</text>
+  </g>
+</svg>

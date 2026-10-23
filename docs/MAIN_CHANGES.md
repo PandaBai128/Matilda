@@ -299,3 +299,10 @@ Worker 测试覆盖 MiniMax TTS SSE 分块、上游取消和背压处理。
 - 源码、README、AGENTS 和素材文档同步，旧包及构建副本可从 `/private/tmp/matilda-appearance-refine.cvLN0A/` 的 `.bundle` 恢复。正式安装仍为 `/Users/nathan/Applications/Matilda.app`，沿用现有 Apple Development 身份。
 - 测试后 Xcode UI 普通构建于 10:27 成功，最终包已替换并运行，严格签名与原 designated requirement 一致。Spotlight、Launch Services 和进程均只指向该安装；一次性设置入口已自清除。安装后的 About 窗口确认新应用图标，外观窗口确认六姿态和新分组，无新增权限提示。
 - GitHub 同步前追加代理回归：`npm test` 43 项全部通过，`npm run typecheck` 与 `git diff --check` 通过。代码、素材、测试与维护文档一起归档；本地凭据、性能采样、安装包和临时备份不上传。
+
+## 20. 面向使用者的图文首页（2026-10-23）
+
+- README 聚焦跟随、看屏解答、指向和单步操作，用四项功能示意图、自然语言指令及当前应用实际姿态素材展示能力；移除旧概念宣传图的首页引用，原图保留。
+- 首页展示头像六姿态与小身体，说明已加入文字核对/控件中心校准，保留本地代理与单步范围，不将限定测试成绩宣传成所有桌面百分之百准确。
+- 删除“无需 MiniMax Code”等试用阶段解释，安装、配置、协议来源、复测命令和远端代理信息集中到 `docs/DEVELOPMENT.md`；AGENTS 的对应入口同步更新。产品首页不再承载历史调试记录。
+- 本次仅修改文档和功能示意图，未改 App 行为或配置。图片渲染和本地文档链接检查通过；不重复构建或要求授权。
